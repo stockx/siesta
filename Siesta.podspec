@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
 
   s.name         = "Siesta"
-  s.version      = "1.1.1"
+  s.version      = "1.1.1.1"
   s.summary      = "Swift REST client library"
 
   s.description  = <<-DESC
