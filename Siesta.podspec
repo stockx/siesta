@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
 
   s.name         = "Siesta"
-  s.version      = "1.4.3"
+  s.version      = "1.3.0.1"
   s.summary      = "Swift REST client library"
 
   s.description  = <<-DESC
@@ -19,7 +19,7 @@ Pod::Spec.new do |s|
 
                    ## Stats
 
-                   * **OS:** iOS 8+, OS X / macOS 10.11+, tvOS 9.0+
+                   * **OS:** iOS 8+, OS X / macOS 10.11+
                    * **Languages:** Written in Swift, supports apps in both Swift and Objective-C
                    * **Tool requirements:** Xcode 8, Swift 3.0
                    * **License:** MIT
@@ -68,9 +68,8 @@ Pod::Spec.new do |s|
 
   s.ios.deployment_target = "8.0"
   s.osx.deployment_target = "10.11"
-  s.tvos.deployment_target = "9.0"
 
-  s.source = { :git => "https://github.com/bustoutsolutions/siesta.git", :tag => "1.4.3" }
+  s.source = { :git => "https://github.com/bustoutsolutions/siesta.git", :tag => "1.3.0.1" }
 
   s.subspec "Core" do |s|
     s.source_files = "Source/Siesta/**/*"
@@ -78,14 +77,14 @@ Pod::Spec.new do |s|
   end
 
   s.subspec "UI" do |s|
-    s.ios.source_files = "Source/SiestaUI/**/*.{swift,m,h}"
+    s.ios.source_files = "Source/SiestaUI/**/*"
     s.dependency "Siesta/Core"
     s.exclude_files = "**/Info*.plist"
     s.ios.resources = "Source/**/*.xib"
   end
 
   s.subspec "Alamofire" do |s|
-    s.source_files = "Extensions/Alamofire/**/*.{swift,m,h}"
+    s.source_files = "Extensions/Alamofire/**/*"
     s.dependency "Siesta/Core"
     s.dependency "Alamofire", "> 4.1"
   end
