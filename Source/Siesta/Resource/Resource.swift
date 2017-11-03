@@ -268,6 +268,25 @@ public final class Resource: NSObject
         let requestBuilder: () -> URLRequest =
             {
             var underlyingRequest = URLRequest(url: self.url)
+            
+            let refreshTime = UserDefaults.standard.double(forKey: "com.stockx.refreshTimer")
+            var timeoutInterval: Double = 3
+                
+            if refreshTime > 10 {
+                timeoutInterval = refreshTime - 5
+            }
+            else if refreshTime > 5 {
+                timeoutInterval = refreshTime - 2
+            }
+            else if refreshTime > 1 {
+                timeoutInterval = refreshTime - 1
+            }
+            else {
+                timeoutInterval = refreshTime
+            }
+                
+            underlyingRequest.timeoutInterval = timeoutInterval
+            
             underlyingRequest.httpMethod = method.rawValue.uppercased()
             let config = self.configuration(for: method)
 
