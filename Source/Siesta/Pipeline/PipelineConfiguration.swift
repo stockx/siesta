@@ -33,7 +33,7 @@ import Foundation
   By default, Siesta pipelines start with parsers for common data types (JSON, text, image) configured at the
   `PipelineStageKey.parsing` stage. You can remove these default transformers for individual configurations using calls
   such as `clear()` and `PipelineStage.removeAllTransformers()`, or you can disable these default parsers entirely by
-  passing `useDefaultTransformers: false` when creating a `Service`.
+  passing `standardTransformers: []` when creating a `Service`.
 
   Services do not have any persistent caching by default.
 */
@@ -69,7 +69,7 @@ public struct Pipeline
                 .map { key, _ in key }
             let missingStages = Set(nonEmptyStages).subtracting(newValue)
             if !missingStages.isEmpty
-                { debugLog(.pipeline, ["WARNING: Stages", missingStages, "configured but not present in custom pipeline order, will be ignored:", newValue]) }
+                { SiestaLog.log(.pipeline, ["WARNING: Stages", missingStages, "configured but not present in custom pipeline order, will be ignored:", newValue]) }
             }
         }
 
@@ -201,7 +201,7 @@ public struct PipelineStage
       Removes any caching that had been configured at this stage.
     */
     public mutating func doNotCache()
-        { cacheBox = nil}
+        { cacheBox = nil }
     }
 
 extension PipelineStage
@@ -252,7 +252,7 @@ public final class PipelineStageKey: _OpenEnum, CustomStringConvertible
     }
 
 // MARK: Default Stages
-public extension PipelineStageKey
+extension PipelineStageKey
     {
     /// Response data still unprocessed. The stage typically contains no transformers.
     public static let rawData = PipelineStageKey(description: "rawData")

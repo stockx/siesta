@@ -29,7 +29,7 @@ extension URL: URLConvertible
         { return self }
     }
 
-internal extension URL
+extension URL
     {
     func alterPath(_ pathMutator: (inout String) -> Void) -> URL?
         {
@@ -49,7 +49,7 @@ internal extension URL
         let queryItems = components.queryItems ?? []
         var queryDict = [String:String?](minimumCapacity: queryItems.count)
         for item in queryItems
-            { queryDict[item.name] = item.value }
+            { queryDict[item.name] = item.value ?? "" }
 
         queryMutator(&queryDict)
 

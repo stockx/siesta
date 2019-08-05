@@ -29,6 +29,17 @@ class RequestSpec: ResourceSpecBase
                 awaitNewData(resource().request(.patch))
                 }
 
+            for (method, httpCode) in [(RequestMethod.head, 200), (RequestMethod.post, 204)]
+                {
+                it("represents response without body as zero-length Data for \(method) → \(httpCode)")
+                    {
+                    _ = stubRequest(resource, "HEAD").andReturn(200)
+                    let req = resource().request(.head)
+                    awaitNewData(req)
+                    req.onSuccess { expect($0.typedContent()) == Data() }
+                    }
+                }
+
             it("sends headers from configuration")
                 {
                 service().configure { $0.headers["Zoogle"] = "frotz" }
@@ -36,6 +47,84 @@ class RequestSpec: ResourceSpecBase
                     .withHeader("Zoogle", "frotz")
                     .andReturn(200)
                 awaitNewData(resource().request(.get))
+                }
+
+            describe("mutators")
+                {
+                it("can alter headers")
+                    {
+                    var malkoviches = ""
+                    service().configure
+                        {
+                        $0.mutateRequests
+                            {
+                            malkoviches += "malkovich"
+                            $0.setValue(malkoviches, forHTTPHeaderField: "X-Malkoviches")
+                            }
+                        }
+
+                    for counter in ["malkovich", "malkovichmalkovich", "malkovichmalkovichmalkovich"]
+                        {
+                        LSNocilla.sharedInstance().clearStubs()
+                        _ = stubRequest(resource, "GET").withHeader("X-Malkoviches", counter).andReturn(200)
+                        awaitNewData(resource().request(.get))
+                        }
+                    }
+
+                it("can read and alter the body")
+                    {
+                    service().configure
+                        {
+                        $0.mutateRequests
+                            {
+                            req in
+                            if var body = req.httpBody
+                                {
+                                body += [42]
+                                req.httpBody = body
+                                req.setValue(String(body.count), forHTTPHeaderField: "Content-Length")
+                                }
+                            }
+                        }
+
+                    _ = stubRequest(resource, "POST")
+                        .withHeader("Content-Length", "4")
+                        .withBody(Data([0, 1, 2, 42]) as NSData)
+                        .andReturn(200)
+                    awaitNewData(resource().request(.post, data: Data([0, 1, 2]), contentType: "foo/bar"))
+                    }
+
+                it("can alter the HTTP method, but this does not change mutators used")
+                    {
+                    service().configure(requestMethods: [.get])
+                        {
+                        $0.mutateRequests
+                            { $0.setValue($0.httpMethod, forHTTPHeaderField: "Original-Method") }
+                        $0.mutateRequests
+                            { $0.httpMethod = "POST" }
+                        $0.mutateRequests
+                            { $0.setValue($0.httpMethod, forHTTPHeaderField: "Mutated-Method") }
+                        }
+
+                    var decorated = 0
+                    service().configure(requestMethods: [.post])
+                        {
+                        $0.mutateRequests
+                            { _ in fail("mutation should use original HTTP method only") }
+                        $0.decorateRequests
+                            {
+                            decorated += 1
+                            return $1
+                            }
+                        }
+
+                    _ = stubRequest(resource, "POST")
+                        .withHeader("Original-Method", "GET")
+                        .withHeader("Mutated-Method", "POST")
+                        .andReturn(200)
+                    awaitNewData(resource().request(.get))
+                    expect(decorated) == 1
+                    }
                 }
 
             describe("decorators")
@@ -88,12 +177,12 @@ class RequestSpec: ResourceSpecBase
                             }
                         }
 
-                    awaitFailure(resource().load(), alreadyCompleted: true)  // Nocilla will flag if network call goes through
+                    awaitFailure(resource().load(), initialState: .completed)  // Nocilla will flag if network call goes through
                     }
 
                 context("substituting a request")
                     {
-                    let dummyRequest = { Resource.failedRequest(RequestError(userMessage: "dummy", cause: DummyError())) }
+                    let dummyRequest = { Resource.failedRequest(returning: RequestError(userMessage: "dummy", cause: DummyError())) }
                     let dummyReq0 = specVar { dummyRequest() },
                         dummyReq1 = specVar { dummyRequest() }
 
@@ -110,7 +199,7 @@ class RequestSpec: ResourceSpecBase
 
                         let req = resource().load()
                         expect(req) === dummyReq0()
-                        awaitFailure(req, alreadyCompleted: true)
+                        awaitFailure(req, initialState: .completed)
                         }
 
                     it("causes downstream decorators to see the replacement")
@@ -132,7 +221,7 @@ class RequestSpec: ResourceSpecBase
 
                         let req = resource().load()
                         expect(req) === dummyReq1()
-                        awaitFailure(req, alreadyCompleted: true)
+                        awaitFailure(req, initialState: .completed)
                         }
 
                     it("does not start the original request if it was discarded")
@@ -140,9 +229,9 @@ class RequestSpec: ResourceSpecBase
                         service().configure
                             {
                             $0.decorateRequests
-                                { _ in dummyReq0() }
+                                { _,_  in dummyReq0() }
                             }
-                        awaitFailure(resource().load(), alreadyCompleted: true)  // Nocilla will flag if network call goes through
+                        awaitFailure(resource().load(), initialState: .completed)  // Nocilla will flag if network call goes through
                         }
 
                     it("starts the original request if it is the first in a chain")
@@ -155,7 +244,7 @@ class RequestSpec: ResourceSpecBase
                                     {
                                     var responseInfo = $0
                                     guard case .success(var entity) = responseInfo.response else
-                                        { fatalError() }
+                                        { fatalError("first request in chain should have succeeded") }
                                     entity.content = entity.text + " redux"
                                     responseInfo.response = .success(entity)
                                     return .useResponse(responseInfo)
@@ -177,7 +266,7 @@ class RequestSpec: ResourceSpecBase
                             $0.decorateRequests
                                 {
                                 _, req in
-                                Resource.failedRequest(RequestError(userMessage: "dummy", cause: DummyError()))
+                                Resource.failedRequest(returning: RequestError(userMessage: "dummy", cause: DummyError()))
                                     .chained
                                         {
                                         _ in if passToOriginalRequest
@@ -215,7 +304,7 @@ class RequestSpec: ResourceSpecBase
                 { expect($0.response.isCancellation) == true }
             req.cancel()
             _ = reqStub.go()
-            awaitFailure(req, alreadyCompleted: true)
+            awaitFailure(req, initialState: .completed)
             }
 
         it(".cancel() has no effect if it already succeeded")
@@ -226,7 +315,7 @@ class RequestSpec: ResourceSpecBase
                 { expect($0.response.isCancellation) == false }
             awaitNewData(req)
             req.cancel()
-            awaitNewData(req, alreadyCompleted: true)
+            awaitNewData(req, initialState: .completed)
             }
 
         it(".cancel() has no effect if it never started")
@@ -234,7 +323,7 @@ class RequestSpec: ResourceSpecBase
             let req = resource().request(.post, json: ["unencodable": Data()])
             req.onCompletion
                 { expect($0.response.isCancellation) == false }
-            awaitFailure(req, alreadyCompleted: true)
+            awaitFailure(req, initialState: .completed)
             req.cancel()
             }
 
@@ -253,13 +342,13 @@ class RequestSpec: ResourceSpecBase
 
             func expectResonseText(_ request: Request, text: String)
                 {
-                let expectation = QuickSpec.current().expectation(description: "response text")
+                let expectation = QuickSpec.current.expectation(description: "response text")
                 request.onSuccess
                     {
                     expectation.fulfill()
                     expect($0.typedContent()) == text
                     }
-                QuickSpec.current().waitForExpectations(timeout: 1)
+                QuickSpec.current.waitForExpectations(timeout: 1)
                 }
 
             let oldRequest = specVar
@@ -307,7 +396,7 @@ class RequestSpec: ResourceSpecBase
 
             it("picks up header config changes")
                 {
-                var flavor: String? = nil
+                var flavor: String?
                 service().configure
                     { $0.headers["X-Flavor"] = flavor }
 
@@ -362,8 +451,7 @@ class RequestSpec: ResourceSpecBase
             {
             it("handles raw data")
                 {
-                let bytes: [UInt8] = [0x00, 0xFF, 0x17, 0xCA]
-                let nsdata = Data(bytes: UnsafePointer<UInt8>(bytes), count: bytes.count)
+                let nsdata = Data([0x00, 0xFF, 0x17, 0xCA])
 
                 _ = stubRequest(resource, "POST")
                     .withHeader("Content-Type", "application/monkey")
@@ -386,7 +474,7 @@ class RequestSpec: ResourceSpecBase
             it("handles string encoding errors")
                 {
                 let req = resource().request(.post, text: "Hélas!", encoding: String.Encoding.ascii)
-                awaitFailure(req, alreadyCompleted: true)
+                awaitFailure(req, initialState: .completed)
                 req.onFailure
                     {
                     let cause = $0.cause as? RequestError.Cause.UnencodableText
@@ -408,7 +496,7 @@ class RequestSpec: ResourceSpecBase
             it("handles JSON encoding errors")
                 {
                 let req = resource().request(.post, json: ["question": [2, Data()]])
-                awaitFailure(req, alreadyCompleted: true)
+                awaitFailure(req, initialState: .completed)
                 req.onFailure
                     { expect($0.cause is RequestError.Cause.InvalidJSONObject) == true }
                 }
@@ -438,13 +526,13 @@ class RequestSpec: ResourceSpecBase
                 it("gives request failure for unencodable strings")
                     {
                     let bogus = String(
-                        bytes: [0xD8, 0x00] as [UInt8],  // Unpaired surrogate char in UTF-16
+                        bytes: [0xD8, 0x00],  // Unpaired surrogate char in UTF-16
                         encoding: String.Encoding.utf16BigEndian)!
 
                     for badParams in [[bogus: "foo"], ["foo": bogus]]
                         {
                         let req = resource().request(.patch, urlEncoded: badParams)
-                        awaitFailure(req, alreadyCompleted: true)
+                        awaitFailure(req, initialState: .completed)
                         req.onFailure
                             {
                             let cause = $0.cause as? RequestError.Cause.NotURLEncodable
@@ -452,6 +540,37 @@ class RequestSpec: ResourceSpecBase
                             }
                         }
                     }
+                }
+
+            it("overrides any Content-Type set in configuration headers")
+                {
+                service().configure { $0.headers["Content-Type"] = "frotzle/ooglatz" }
+                _ = stubRequest(resource, "POST")
+                    .withHeader("Content-Type", "application/json")
+                awaitNewData(resource().request(.post, json: ["foo": "bar"]))
+                }
+
+            it("lets ad hoc request mutation override the Content-Type")
+                {
+                _ = stubRequest(resource, "POST")
+                    .withHeader("Content-Type", "person/json")
+                let req = resource().request(.post, json: ["foo": "bar"])
+                    { $0.setValue("person/json", forHTTPHeaderField: "Content-Type") }
+                awaitNewData(req)
+                }
+
+            it("lets configured mutators override the Content-Type")
+                {
+                service().configure
+                    {
+                    $0.mutateRequests
+                        { $0.setValue("argonaut/json", forHTTPHeaderField: "Content-Type") }  // This one wins, even though...
+                    }
+
+                _ = stubRequest(resource, "POST").withHeader("Content-Type", "argonaut/json")
+                let req = resource().request(.post, json: ["foo": "bar"])                     // ...request(json:) sets it to "application/json"...
+                    { $0.setValue("person/json", forHTTPHeaderField: "Content-Type") }        // ...and ad hoc mutation overrides that.
+                awaitNewData(req)
                 }
             }
 
@@ -465,11 +584,11 @@ class RequestSpec: ResourceSpecBase
                     .withBody(body as NSString)
                 }
 
-            func expectResult(_ expectedResult: String, for req: Request, alreadyCompleted: Bool = false)
+            func expectResult(_ expectedResult: String, for req: Request, initialState: RequestState = .inProgress)
                 {
-                var actualResult: String? = nil
+                var actualResult: String?
                 req.onSuccess { actualResult = $0.text }
-                awaitNewData(req, alreadyCompleted: alreadyCompleted)
+                awaitNewData(req, initialState: initialState)
 
                 expect(actualResult) == expectedResult
                 }
@@ -524,9 +643,9 @@ class RequestSpec: ResourceSpecBase
                 let reqStub = stubText("yo").delay()
                 let req = resource().request(.get).chained
                     { _ in .useThisResponse }
-                expect(req.isCompleted).to(beFalse())
+                expect(req.state) == .inProgress
                 _ = reqStub.go()
-                expect(req.isCompleted).toEventually(beTrue())
+                expect(req.state).toEventually(equal(.completed))
                 }
 
             describe("cancel()")
@@ -546,23 +665,25 @@ class RequestSpec: ResourceSpecBase
 
                     chainedReq.cancel()
                     _ = reqStub.go()
-                    awaitFailure(originalReq, alreadyCompleted: true)
+                    awaitFailure(originalReq, initialState: .completed)
                     }
 
                 it("stops the chain from proceeding")
                     {
                     let reqStub = stubText("yo").delay()
 
-                    let req = resource().request(.get).chained
+                    let originalReq = resource().request(.get)
+                    let chainedReq = originalReq.chained
                         {
                         _ in
                         fail("should not be called")
                         return .useThisResponse
                         }
 
-                    req.cancel()
+                    chainedReq.cancel()
+                    awaitFailure(chainedReq, initialState: .completed)
                     _ = reqStub.go()
-                    awaitFailure(req, alreadyCompleted: true)
+                    awaitFailure(originalReq, initialState: .completed)
                     }
 
                 it("does not stop the chain if the underlying request is cancelled")
@@ -578,8 +699,12 @@ class RequestSpec: ResourceSpecBase
 
                     originalReq.cancel()
                     _ = reqStub.go()
-                    awaitFailure(originalReq, alreadyCompleted: true)
-                    expectResult("custom", for: chainedReq, alreadyCompleted: true)
+                    awaitFailure(originalReq, initialState: .completed)
+                    expectResult("custom", for: chainedReq, initialState: .completed)
+
+                    // For whatever reason, this spec is especially prone to hitting Nocilla’s
+                    // quirk of making cancelled requests go through anyway
+                    Thread.sleep(forTimeInterval: 0.05)
                     }
                 }
 
@@ -624,7 +749,7 @@ class RequestSpec: ResourceSpecBase
 
                     expectResult("oy", for: req)
                     expectResult("yo", for: req.repeated().start())
-                    expectResult("oy", for: req, alreadyCompleted: true)
+                    expectResult("oy", for: req, initialState: .completed)
                     }
 
                 it("does not rerun chained requests wrapped outside of the restart")
@@ -653,9 +778,77 @@ class RequestSpec: ResourceSpecBase
                     }
                 }
             }
+
+        describe("with custom delegate")
+            {
+            let dummyResponse =
+                ResponseInfo(
+                    response: .success(Entity<Any>(
+                        content: "dummy response",
+                        contentType: "text/whatever")))
+
+            it("doesn't automatically start")
+                {
+                let delegate = RequestDelegateStub
+                    { _ in fail("should not execute") }
+                _ = Resource.prepareRequest(using: delegate)
+                }
+
+            it("doesn't complete until completion handler called")
+                {
+                let delegate = RequestDelegateStub
+                    { _ in }
+                _ = Resource.prepareRequest(using: delegate)
+                    .onCompletion { _ in fail("should not execute") }
+                    .start()
+                }
+
+            it("yields the response from the completion handler")
+                {
+                let delegate = RequestDelegateStub
+                    { $0.broadcastResponse(dummyResponse) }
+                let req = Resource.prepareRequest(using: delegate)
+                    .onSuccess { expect($0.content as? String) == "dummy response" }
+                    .start()
+                awaitNewData(req, initialState: .completed)
+                }
+
+            it("will ignore the response after one is already broadcast")
+                {
+                let delegate = RequestDelegateStub
+                    {
+                    completionHandler in
+                    expect(completionHandler.willIgnore(dummyResponse)) == false
+                    completionHandler.broadcastResponse(dummyResponse)
+                    expect(completionHandler.willIgnore(dummyResponse)) == true
+                    }
+                Resource.prepareRequest(using: delegate).start()
+                }
+
+            // TODO: What else needs testing here?
+            }
         }
     }
 
 // MARK: - Helpers
 
 private struct DummyError: Error { }
+
+private class RequestDelegateStub: RequestDelegate
+    {
+    private let startOperation: (RequestCompletionHandler) -> Void
+
+    init(startOperation: @escaping (RequestCompletionHandler) -> Void)
+        { self.startOperation = startOperation }
+
+    func startUnderlyingOperation(passingResponseTo completionHandler: RequestCompletionHandler)
+        { startOperation(completionHandler) }
+
+    func cancelUnderlyingOperation()
+        { }
+
+    func repeated() -> RequestDelegate
+        { fatalError("unsupported") }
+
+    let requestDescription = "DummyRequestDelegate"
+    }

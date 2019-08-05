@@ -9,8 +9,7 @@ import Foundation
 
 
 // Overridable for testing
-internal var fakeNow: TimeInterval?
-internal let now = { fakeNow ?? Date.timeIntervalSinceReferenceDate }
+internal var now = { Date.timeIntervalSinceReferenceDate }
 
 /**
   An in-memory cache of a RESTful resource, plus information about the status of network requests related to it.
@@ -30,9 +29,11 @@ public final class Resource: NSObject
     // MARK: Essentials
 
     /// The API to which this resource belongs. Provides configuration defaults and instance uniqueness.
+    @objc
     public let service: Service
 
     /// The canoncial URL of this resource.
+    @objc
     public let url: URL
 
     private let urlDescription: String
@@ -95,7 +96,7 @@ public final class Resource: NSObject
     public private(set) var latestData: Entity<Any>?
         {
         get {
-            initializeDataFromCache()  // asynchronous; won't immediately change data
+            performCacheCheck()  // asynchronous; won't immediately change data
             return _latestData
             }
 
@@ -120,6 +121,7 @@ public final class Resource: NSObject
         }
 
     /// The time of the most recent update to either `latestData` or `latestError`.
+    @objc
     public var timestamp: TimeInterval
         {
         DispatchQueue.mainThreadPrecondition()
@@ -136,6 +138,7 @@ public final class Resource: NSObject
 
     /// True if any load requests (i.e. from calls to `load(...)` and `loadIfNeeded()`)
     /// for this resource are in progress.
+    @objc
     public var isLoading: Bool
         {
         DispatchQueue.mainThreadPrecondition()
@@ -144,6 +147,7 @@ public final class Resource: NSObject
         }
 
     /// True if any requests for this resource are in progress.
+    @objc
     public var isRequesting: Bool
         {
         DispatchQueue.mainThreadPrecondition()
@@ -175,7 +179,7 @@ public final class Resource: NSObject
         DispatchQueue.mainThreadPrecondition()
 
         self.service = service
-        self.url = URL(string: ":")!
+        self.url = URL(string: ":").forceUnwrapped(because: "Foundation considers single colon to be a valid URL")
 
         permanentFailure = RequestError(
             userMessage: NSLocalizedString("Cannot send request with invalid URL", comment: "userMessage"),
@@ -215,7 +219,7 @@ public final class Resource: NSObject
 
       - SeeAlso: `Resource.request(...)`
     */
-    public typealias RequestMutation = (inout URLRequest) -> ()
+    public typealias RequestMutation = (inout URLRequest) -> Void
 
     /**
       Initiates a network request for the given resource.
@@ -234,7 +238,9 @@ public final class Resource: NSObject
       - Parameter method: The HTTP verb to use for the request
       - Parameter requestMutation:
           An optional callback to change details of the request before it is sent.
-          Does nothing by default.
+          Does nothing by default. Note that this is applied _before_ any mutations configured with
+          `Configuration.mutateRequests(...)`. This allows configured mutations to inspect and alter the request after
+          it is fully populated.
 
       - SeeAlso:
         - `load()`
@@ -248,35 +254,39 @@ public final class Resource: NSObject
     */
     public func request(
             _ method: RequestMethod,
-            requestMutation: @escaping RequestMutation = { _ in })
+            requestMutation adHocMutation: @escaping RequestMutation = { _ in })
         -> Request
         {
         DispatchQueue.mainThreadPrecondition()
 
         if let permanentFailure = permanentFailure
-            { return Resource.failedRequest(permanentFailure) }
+            { return Resource.failedRequest(returning: permanentFailure) }
 
         // Build the request
 
-        let requestBuilder: (Void) -> URLRequest =
+        let delegate = NetworkRequestDelegate(resource: self)
             {
             var underlyingRequest = URLRequest(url: self.url)
             underlyingRequest.httpMethod = method.rawValue.uppercased()
-            for (header, value) in self.configuration(for: method).headers
+            let config = self.configuration(for: method)
+
+            for (header, value) in config.headers
                 { underlyingRequest.setValue(value, forHTTPHeaderField: header) }
 
-            requestMutation(&underlyingRequest)
+            adHocMutation(&underlyingRequest)
+            for configuredMutation in config.requestMutations
+                { configuredMutation(&underlyingRequest) }
 
-            debugLog(.networkDetails, ["Request:", dumpHeaders(underlyingRequest.allHTTPHeaderFields ?? [:], indent: "    ")])
+            SiestaLog.log(.networkDetails, ["Request:", dumpHeaders(underlyingRequest.allHTTPHeaderFields ?? [:], indent: "    ")])
 
             return underlyingRequest
             }
 
-        let rawReq = NetworkRequest(resource: self, requestBuilder: requestBuilder)
+        let bareReq = Resource.prepareRequest(using: delegate)
 
         // Optionally decorate the request
 
-        let req = rawReq.config.requestDecorators.reduce(rawReq as Request)
+        let req = delegate.config.requestDecorators.reduce(bareReq)
             { req, decorate in decorate(self, req) }
 
         // Track the fully decorated request
@@ -299,6 +309,7 @@ public final class Resource: NSObject
         - the last request failed (i.e. `latestError` is not nil), and
         - the timestamp on `latestError` is more recent than `retryTime` seconds ago.
     */
+    @objc
     public var isUpToDate: Bool
         {
         let maxAge = (latestError == nil)
@@ -332,7 +343,7 @@ public final class Resource: NSObject
                 : [name, "expired", deltaFormatted, "sec ago"]
             }
 
-        debugLog(.staleness,
+        SiestaLog.log(.staleness,
             [self, (result ? "is" : "is not"), "up to date:"]
             + formatExpirationTime("error", latestError?.timestamp, configuration.retryTime)
             + ["|"]
@@ -355,12 +366,53 @@ public final class Resource: NSObject
 
         if let loadReq = loadRequests.first
             {
-            debugLog(.staleness, [self, "loadIfNeeded(): load is already in progress: \(loadReq)"])
+            SiestaLog.log(.staleness, [self, "loadIfNeeded(): load is already in progress: \(loadReq)"])
             return loadReq
             }
 
         if isUpToDate
             { return nil }
+
+        if case .inProgress(let cacheRequest) = cacheCheckStatus
+            {
+            // isLoading needs to be:
+            //  - false at first,
+            //  - true after loadIfNeeded() while the cache check is in progress, but
+            //  - false again before observers receive a cache hit.
+            //
+            // To make this happen, we need to add the chained cacheThenNetwork below
+            // to loadRequests after it’s created, but remove it _before_ the request
+            // chain proceeds. The trickery with trackedRequest below makes this happen.
+
+            var trackedRequest: Request?
+            cacheRequest.onCompletion
+                {
+                _ in self.loadRequests.removeAll { $0 === trackedRequest }
+                }
+
+            // Now we're ready to construct a chained request that will return either a
+            // cache hit or a bona fide network result.
+
+            let cacheThenNetwork = cacheRequest.chained
+                {
+                _ in // We don’t need the result of the cache request here; resource state is already updated
+
+                if self.isUpToDate                 // If cached data is up to date...
+                    {
+                    self.receiveDataNotModified()  // ...tell observers isLoading is false...
+                    return .useThisResponse        // ...and no need to make a network call!
+                    }
+                else
+                    {
+                    return .passTo(self.load())    // Cache was a bust, so make the real request
+                    }
+                }
+
+            loadRequests.append(cacheThenNetwork)
+            trackedRequest = cacheThenNetwork
+
+            return cacheThenNetwork
+            }
 
         return load()
         }
@@ -420,7 +472,7 @@ public final class Resource: NSObject
 
         trackRequest(req, in: &loadRequests)
 
-        req.onProgress(notifyObservers)
+        req.onProgress(notifyObservers(ofProgress:))
 
         req.onNewData(receiveNewDataFromNetwork)
         req.onNotModified(receiveDataNotModified)
@@ -434,15 +486,16 @@ public final class Resource: NSObject
     /**
       If this resource has no observers, cancels all `loadRequests`.
     */
+    @objc
     public func cancelLoadIfUnobserved()
         {
         DispatchQueue.mainThreadPrecondition()
 
         guard !beingObserved else
-            { return debugLog(.networkDetails, [self, "still has", observers.count, "observer(s), so cancelLoadIfUnobserved() does nothing"]) }
+            { return SiestaLog.log(.networkDetails, [self, "still has", observers.count, "observer(s), so cancelLoadIfUnobserved() does nothing"]) }
 
         if !loadRequests.isEmpty
-            { debugLog(.network, ["Canceling", loadRequests.count, "load request(s) for unobserved", self]) }
+            { SiestaLog.log(.network, ["Canceling", loadRequests.count, "load request(s) for unobserved", self]) }
 
         for req in loadRequests
             { req.cancel() }
@@ -453,11 +506,12 @@ public final class Resource: NSObject
       where views are being rapidly discarded and recreated, and you no longer need the resource, but want to give other
       views a chance to express interest in it before canceling any requests.
 
-      The `callback` is called aftrer the given delay, regardless of whether the request was cancelled.
+      The `callback` is called after the given delay, regardless of whether the request was cancelled.
     */
-    public func cancelLoadIfUnobserved(afterDelay delay: TimeInterval, then callback: @escaping (Void) -> Void = {})
+    @objc
+    public func cancelLoadIfUnobserved(afterDelay delay: TimeInterval, then callback: @escaping () -> Void = {})
         {
-        DispatchQueue.main.asyncAfter(deadline: DispatchTime.now() + 0.05)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay)
             {
             self.cancelLoadIfUnobserved()
             callback()
@@ -470,8 +524,8 @@ public final class Resource: NSObject
         req.onCompletion
             {
             [weak self] _ in
-            self?.allRequests.remove { $0.isCompleted }
-            self?.loadRequests.remove { $0.isCompleted }
+            self?.allRequests.removeAll { $0.state == .completed }
+            self?.loadRequests.removeAll { $0.state == .completed }
             }
         }
 
@@ -482,7 +536,7 @@ public final class Resource: NSObject
         {
         DispatchQueue.mainThreadPrecondition()
 
-        debugLog(.stateChanges, [self, "received new data from", source, ":", entity])
+        SiestaLog.log(.stateChanges, [self, "received new data from", source, ":", entity])
 
         latestError = nil
         latestData = entity
@@ -499,7 +553,7 @@ public final class Resource: NSObject
 
     private func receiveDataNotModified()
         {
-        debugLog(.stateChanges, [self, "existing data is still valid"])
+        SiestaLog.log(.stateChanges, [self, "existing data is up to date"])
 
         latestError = nil
         latestData?.touch()
@@ -517,7 +571,7 @@ public final class Resource: NSObject
             return
             }
 
-        debugLog(.stateChanges, [self, "received error:", error])
+        SiestaLog.log(.stateChanges, [self, "received error:", error])
 
         latestError = error
 
@@ -576,6 +630,7 @@ public final class Resource: NSObject
 
       If this resource has no content, this method sets the content type to `application/binary`.
     */
+    @objc
     public func overrideLocalContent(with content: Any)
         {
         var updatedEntity = latestData ?? Entity<Any>(content: content, contentType: "application/binary")
@@ -595,6 +650,7 @@ public final class Resource: NSObject
 
       - SeeAlso: `wipe()`
     */
+    @objc
     public func invalidate()
         {
         DispatchQueue.mainThreadPrecondition()
@@ -608,16 +664,18 @@ public final class Resource: NSObject
       - Sets `latestData` to nil.
       - Sets `latestError` to nil.
       - Cancels all resource requests in progress.
+      - Triggers a cache fetch if there is a persistent cache configured for this resource.
 
-      Observers receive a `newData` event. Requests in progress call completion hooks with a cancellation error.
+      Observers receive a `newData(.wipe)` event. Requests in progress call completion hooks with a cancellation error.
 
       - SeeAlso: `invalidate()`
     */
+    @objc
     public func wipe()
         {
         DispatchQueue.mainThreadPrecondition()
 
-        debugLog(.stateChanges, [self, "wiped"])
+        SiestaLog.log(.stateChanges, [self, "wiped"])
 
         for request in allRequests + loadRequests  // need to do both because load(using:) can cross resource boundaries
             { request.cancel() }
@@ -627,40 +685,48 @@ public final class Resource: NSObject
 
         notifyObservers(.newData(.wipe))
 
-        loadDataFromCache()
+        cacheCheckStatus = .notStarted
+        performCacheCheck()
         }
 
     // MARK: Caching
 
     internal func observersChanged()
         {
-        initializeDataFromCache()
+        performCacheCheck()
         // Future config callbacks for observed/unobserved may go here
         }
 
-    private var initialCacheCheckDone = false  // We wait to check for cached data until first observer added
-
-    private func initializeDataFromCache()
+    private enum CacheCheckStatus
         {
-        if !initialCacheCheckDone
-            {
-            initialCacheCheckDone = true
-            loadDataFromCache()
-            }
+        case notStarted
+        case inProgress(Request)
+        case completed
         }
 
-    private func loadDataFromCache()
-        {
-        configuration.pipeline.cachedEntity(for: self)
-            {
-            [weak self] entity in
-            guard let resource = self, resource.latestData == nil else
-                {
-                debugLog(.cache, ["Ignoring cache hit for", self, " because it is either deallocated or already has data"])
-                return
-                }
+    private var cacheCheckStatus = CacheCheckStatus.notStarted  // Wait to check for cached data until first observer added
 
-            resource.receiveNewData(entity, source: .cache)
+    private func performCacheCheck()
+        {
+        if case .notStarted = cacheCheckStatus
+            {
+            cacheCheckStatus = .inProgress(
+                configuration.pipeline.checkCache(for: self)
+                    .onCompletion
+                        {
+                        [weak self] result in
+                        guard let resource = self, resource.latestData == nil else
+                            {
+                            SiestaLog.log(.cache, ["Ignoring cache hit for", self, " because it is either deallocated or already has data"])
+                            return
+                            }
+
+                        resource.cacheCheckStatus = .completed
+
+                        if case .success(let entity) = result.response
+                            { resource.receiveNewData(entity, source: .cache) }
+                        }
+                )
             }
         }
 

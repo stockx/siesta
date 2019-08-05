@@ -6,15 +6,22 @@
 //  Copyright © 2016 Bust Out Solutions. All rights reserved.
 //
 
+// swiftlint:disable missing_docs
+
 import Foundation
-import Siesta
+#if !COCOAPODS
+    import Siesta
+#endif
 
 #if !os(OSX)
 
 extension ResourceEvent
     {
-    internal static let all = [observerAdded, requested, requestCancelled, notModified, error,
-                               newData(.network), newData(.cache), newData(.localOverride), newData(.wipe)]
+    internal static let all =
+        [
+        observerAdded, requested, requestCancelled, notModified, error,
+        newData(.network), newData(.cache), newData(.localOverride), newData(.wipe)
+        ]
 
     internal static func fromDescription(_ description: String) -> ResourceEvent?
         {
@@ -34,6 +41,7 @@ extension ResourceStatusOverlay: _objc_ResourceObserver
         }
     }
 
+// swiftlint:disable identifier_name
 extension ResourceStatusOverlay
     {
     @objc(displayPriority)
@@ -44,7 +52,7 @@ extension ResourceStatusOverlay
             }
 
         set {
-            displayPriority = newValue.flatMap
+            displayPriority = newValue.compactMap
                 {
                 let condition = ResourceStatusOverlay.StateRule(rawValue: $0)
                 if condition == nil
@@ -54,5 +62,6 @@ extension ResourceStatusOverlay
             }
         }
     }
+// swiftlint:enable identifier_name
 
 #endif

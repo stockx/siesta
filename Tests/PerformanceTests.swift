@@ -98,7 +98,7 @@ class SiestaPerformanceTests: XCTestCase
             var x = 0
             resource.addObserver(observers[n % observerCount])
             resource.addObserver(owner: observers[(n * 7) % observerCount])
-                { _ in x += 1 }
+                { _,_  in x += 1 }
             resource.removeObservers(ownedBy: observers[(n * 3) % observerCount])
             }
         }
@@ -123,7 +123,7 @@ class SiestaPerformanceTests: XCTestCase
             var x = 0
             resource.addObserver(observers[n % observerCount])
             resource.addObserver(owner: observers[(n * 7) % observerCount])
-                { _ in x += 1 }
+                { _,_  in x += 1 }
             observers[(n * 3) % observerCount] = TestObserver()
             }
         }
@@ -196,7 +196,7 @@ class SiestaPerformanceTests: XCTestCase
             var responsesPending = reps
             for _ in 0 ..< reps
                 {
-                resource.load().onCompletion
+                resource.load().onSuccess
                     {
                     _ in
                     responsesPending -= 1
@@ -228,7 +228,7 @@ class SiestaPerformanceTests: XCTestCase
         }
     }
 
-struct NetworkStub: NetworkingProvider
+class NetworkStub: NetworkingProvider
     {
     var responses: [String:ResponseStub] = [:]
     let dummyHeaders =
@@ -286,7 +286,7 @@ struct RequestStub: RequestNetworking
 
 class TestObserver: ResourceObserver
     {
-    public var eventCount = 0
+    var eventCount = 0
 
     func resourceChanged(_ resource: Resource, event: ResourceEvent)
         { eventCount += 1 }

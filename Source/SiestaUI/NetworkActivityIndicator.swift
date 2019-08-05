@@ -2,11 +2,15 @@
 //  NetworkActivityIndicator.swift
 //  Siesta
 //
-//  Created by Andrew Reed on 30/10/2016.
+//  Created by Andrew Reed on 2016/10/30.
 //  Copyright © 2016 Bust Out Solutions. All rights reserved.
 //
 
-import Siesta
+#if os(iOS)
+
+#if !COCOAPODS
+    import Siesta
+#endif
 import UIKit
 
 // Tracks the number of requests in progress across all Siesta services
@@ -59,3 +63,5 @@ extension Configuration
             }
         }
     }
+
+#endif

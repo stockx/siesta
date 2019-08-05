@@ -40,6 +40,9 @@ public struct RequestError: Error
 
     /// The HTTP status code (e.g. 404) if this error came from an HTTP response.
     public var httpStatusCode: Int?
+    
+    /// The URL for the request that this error represents.
+    public var url: URL?
 
     /// The response body if this error came from an HTTP response. Its meaning is API-specific.
     public var entity: Entity<Any>?
@@ -64,6 +67,7 @@ public struct RequestError: Error
             userMessage: String? = nil)
         {
         self.httpStatusCode = response?.statusCode
+        self.url = response?.url
         self.cause = cause
 
         if let content = content
@@ -93,7 +97,7 @@ public struct RequestError: Error
         }
     }
 
-public extension RequestError
+extension RequestError
     {
     /**
       Underlying causes of errors reported by Siesta. You will find these on the `RequestError.cause` property.
@@ -170,6 +174,10 @@ public extension RequestError
 
         /// Server sent 304 (“not changed”), but we have no local data for the resource.
         public struct NoLocalDataFor304: Error { }
+
+        /// Internal cache request found no data. Not public because Siesta always chains
+        /// cache request failures to a network request, so clients never see this error.
+        internal struct CacheMiss: Error { }
 
         /// The server sent a text encoding name that the OS does not recognize.
         public struct InvalidTextEncoding: Error

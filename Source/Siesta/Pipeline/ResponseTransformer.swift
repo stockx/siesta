@@ -18,6 +18,8 @@ import Foundation
 #elseif os(iOS) || os(tvOS) || os(watchOS)
     import UIKit
 
+    /// A cross-platform alias for the output type of Siesta’s image content transformer.
+    /// `UIImage` on iOS; `NSImage` on macOS.
     public typealias Image = UIImage
 #endif
 
@@ -40,7 +42,7 @@ public protocol ResponseTransformer: CustomDebugStringConvertible
     func process(_ response: Response) -> Response
     }
 
-public extension ResponseTransformer
+extension ResponseTransformer
     {
     /// Prints the name of the transformer’s Swift type.
     public var debugDescription: String
@@ -49,7 +51,7 @@ public extension ResponseTransformer
     /// Helper to log a transformation. Call this in your custom transformer.
     public func logTransformation(_ result: Response) -> Response
         {
-        debugLog(.pipeline, ["  ├╴Applied transformer:", self, "\n  │ ↳", result.summary()])
+        SiestaLog.log(.pipeline, ["  ├╴Applied transformer:", self, "\n  │ ↳", result.summary()])
         return result
         }
     }
@@ -91,7 +93,7 @@ internal struct ContentTypeMatchTransformer: ResponseTransformer
         if let contentType = contentType,
            contentTypeMatcher.matches(contentType)
             {
-            debugLog(.pipeline, ["  ├╴Transformer", self, "matches content type", debugStr(contentType)])
+            SiestaLog.log(.pipeline, ["  ├╴Transformer", self, "matches content type", debugStr(contentType)])
             return delegate.process(response)
             }
         else
@@ -115,10 +117,29 @@ internal struct ContentTypeMatchTransformer: ResponseTransformer
 public struct ResponseContentTransformer<InputContentType, OutputContentType>: ResponseTransformer
     {
     /**
+      Action to take when actual input type at runtime does not match expected input type declared in code.
+
+      - See: `ResponseContentTransformer.init(...)`
+      - See: `Service.configureTransformer(...)`
+    */
+    public enum InputTypeMismatchAction
+        {
+        /// Output `RequestError.Cause.WrongInputTypeInTranformerPipeline`.
+        case error
+
+        /// Pass the input response through unmodified.
+        case skip
+
+        /// Pass the input response through unmodified if it matches the output type; otherwise output an error.
+        case skipIfOutputTypeMatches
+        }
+
+    /**
       A closure that both processes the content and describes the required input and output types.
 
-      The first argument will be the `Entity.content` property of the second argument, safely cast
-      to the type expected by the closure.
+      The input will be an `Entity` whose `content` is safely cast to the type expected by the closure.
+      If the response content is not castable to `InputContentType`, then the pipeline skips the closure
+      and replaces the resopnse with a `RequestError` describing the type mismatch.
 
       The closure can throw an error to indicate that parsing failed. If it throws a `RequestError`, that
       error is passed on to the resource as is. Other failures are wrapped in a `RequestError`.
@@ -172,7 +193,7 @@ public struct ResponseContentTransformer<InputContentType, OutputContentType>: R
                 case .skip,
                      .skipIfOutputTypeMatches where entity.content is OutputContentType:
 
-                    debugLog(.pipeline, [self, "skipping transformer because its mismatch rule is", mismatchAction, ", and it expected content of type", InputContentType.self, "but got a", type(of: entity.content)])
+                    SiestaLog.log(.pipeline, [self, "skipping transformer because its mismatch rule is", mismatchAction, ", and it expected content of type", InputContentType.self, "but got a", type(of: entity.content)])
                     return .success(entity)
 
                 case .error,
@@ -222,7 +243,7 @@ public struct ResponseContentTransformer<InputContentType, OutputContentType>: R
                     return logTransformation(.failure(error))
 
                 case .failure(let error):
-                    debugLog(.pipeline, ["Unable to parse error response body; will leave error body unprocessed:", error])
+                    SiestaLog.log(.pipeline, ["Unable to parse error response body; will leave error body unprocessed:", error])
                 }
             }
         return .failure(error)
@@ -244,26 +265,10 @@ public struct ResponseContentTransformer<InputContentType, OutputContentType>: R
         }
     }
 
-/**
-  Action to take when actual input type at runtime does not match expected input type declared in code.
-
-  - See: `ResponseContentTransformer.init(...)`
-  - See: `Service.configureTransformer(...)`
-*/
-public enum InputTypeMismatchAction
-    {
-    /// Output `RequestError.Cause.WrongInputTypeInTranformerPipeline`.
-    case error
-
-    /// Pass the input response through unmodified.
-    case skip
-
-    /// Pass the input response through unmodified if it matches the output type; otherwise output an error.
-    case skipIfOutputTypeMatches
-    }
-
 
 // MARK: Transformers for standard types
+
+// swiftlint:disable identifier_name
 
 /// Parses `Data` content as text, using the encoding specified in the content type, or ISO-8859-1 by default.
 public func TextResponseTransformer(_ transformErrors: Bool = true) -> ResponseTransformer
@@ -285,7 +290,7 @@ public func TextResponseTransformer(_ transformErrors: Bool = true) -> ResponseT
         }
     }
 
-/// Parses `Data` content as JSON, outputting either a dictionary or an array.
+/// Parses `Data` content as JSON using JSONSerialization, outputting either a dictionary or an array.
 public func JSONResponseTransformer(_ transformErrors: Bool = true) -> ResponseTransformer
     {
     return ResponseContentTransformer<Data, JSONConvertible>(transformErrors: transformErrors)
@@ -310,3 +315,5 @@ public func ImageResponseTransformer(_ transformErrors: Bool = false) -> Respons
         return image
         }
     }
+
+// swiftlint:enable identifier_name

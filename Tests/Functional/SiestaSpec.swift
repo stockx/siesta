@@ -11,6 +11,7 @@ import Quick
 
 private var currentLogMessages: [String] = []
 private var currentTestFailed: Bool = false
+private var activeSuites = 0
 
 class SiestaSpec: QuickSpec
     {
@@ -18,19 +19,18 @@ class SiestaSpec: QuickSpec
         {
         beforeSuite
             {
-            Siesta.LogCategory.enabled = LogCategory.all
-            Siesta.logger = { currentLogMessages.append($1) }
-            }
-
-        beforeEach
-            {
-            currentTestFailed = false
-            currentLogMessages.removeAll(keepingCapacity: true)
+            SiestaLog.Category.enabled = .all
+            SiestaLog.messageHandler =
+                {
+                _, message in
+                DispatchQueue.main.async
+                    { currentLogMessages.append(message) }
+                }
             }
 
         afterEach
             {
-            (exampleMetadata: Quick.ExampleMetadata) in
+            exampleMetadata in
 
             resultsAggregator.recordResult(self, example: exampleMetadata.example, passed: !currentTestFailed)
 
@@ -43,15 +43,28 @@ class SiestaSpec: QuickSpec
                 print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                 print("")
                 }
+
+            currentTestFailed = false
+            currentLogMessages.removeAll(keepingCapacity: true)
+            }
+
+        beforeSuite
+            {
+            activeSuites += 1
             }
 
         afterSuite
             {
-            resultsAggregator.flush()
+            activeSuites -= 1
+            if activeSuites <= 0
+                {
+                simulateMemoryWarning()
+                resultsAggregator.flush()
+                }
             }
         }
 
-    override func recordFailure(withDescription description: String, inFile filePath: String, atLine lineNumber: UInt, expected: Bool)
+    override func recordFailure(withDescription description: String, inFile filePath: String, atLine lineNumber: Int, expected: Bool)
         {
         currentTestFailed = true
         super.recordFailure(withDescription: description, inFile: filePath, atLine: lineNumber, expected: expected)
@@ -63,7 +76,7 @@ private let resultsAggregator = ResultsAggregator()
 
 private class ResultsAggregator
     {
-    private var results: Result = Result(name: "Root")
+    private var results = Result(name: "Root")
     private var resultsDirty = false
 
     func flush()
@@ -71,10 +84,12 @@ private class ResultsAggregator
         if !resultsDirty
             { return }
 
-        let json = ["results": results.toJson["children"]!]
-        let jsonData = try! JSONSerialization.data(withJSONObject: json, options: [])
-        if !((try? jsonData.write(to: URL(fileURLWithPath: "/tmp/siesta-spec-results.json"), options: [.atomic])) != nil)
-            { print("unable to write spec results json") }
+        do  {
+            let jsonData = try! JSONEncoder().encode(["results": results.children])
+            try jsonData.write(to: URL(fileURLWithPath: "/tmp/siesta-spec-results.json"), options: [.atomic])
+            }
+        catch
+            { print("WARNING: unable to write spec results json: \(error)") }
 
         resultsDirty = false
         }
@@ -82,7 +97,10 @@ private class ResultsAggregator
     func recordResult(_ spec: QuickSpec, example: Example, passed: Bool)
         {
         recordResult(
-            [specDescription(spec)] + example.name.components(separatedBy: ", "),
+            [specDescription(spec)]                 // Test class name
+                + example.name
+                    .components(separatedBy: ", ")  // Quick reports individual test case names separated by commas
+                    .filter { !$0.isEmpty },        // Siesta uses context("") to order its before/after blocks
             subtree: results,
             callsite: example.callsite,
             passed: passed)
@@ -101,7 +119,8 @@ private class ResultsAggregator
             }
         else
             {
-            subtree.callsite = callsite
+            subtree.file = callsite.file
+            subtree.line = callsite.line
             subtree.passed = passed
             }
         }
@@ -114,10 +133,11 @@ private class ResultsAggregator
         }
     }
 
-private class Result
+private class Result: Codable
     {
     let name: String
-    var callsite: Quick.Callsite?
+    var file: String?
+    var line: UInt?
     var passed: Bool?
     var children: [Result] = []
 
@@ -132,20 +152,5 @@ private class Result
         let newChild = Result(name: named)
         children.append(newChild)
         return newChild
-        }
-
-    var toJson: [String:Any]
-        {
-        var json: [String:Any] = ["name": name]
-        if let callsite = callsite
-            {
-            json["file"] = callsite.file
-            json["line"] = callsite.line
-            }
-        if let passed = passed
-            { json["passed"] = passed }
-        if !children.isEmpty
-            { json["children"] = children.map { $0.toJson } }
-        return json
         }
     }

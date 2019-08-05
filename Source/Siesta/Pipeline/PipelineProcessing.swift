@@ -8,10 +8,10 @@
 
 import Foundation
 
-internal extension Pipeline
+extension Pipeline
     {
     private var stagesInOrder: [PipelineStage]
-        { return order.flatMap { self[$0] } }
+        { return order.compactMap { self[$0] } }
 
     private typealias StageAndEntry = (PipelineStage, CacheEntryProtocol?)
 
@@ -21,7 +21,7 @@ internal extension Pipeline
             { stage in (stage, stage.cacheBox?.buildEntry(resource)) }
         }
 
-    internal func makeProcessor(_ rawResponse: Response, resource: Resource) -> (Void) -> Response
+    internal func makeProcessor(_ rawResponse: Response, resource: Resource) -> () -> Response
         {
         // Generate cache keys on main thread (because this touches Resource)
         let stagesAndEntries = self.stagesAndEntries(for: resource)
@@ -31,8 +31,8 @@ internal extension Pipeline
             {
             let result = Pipeline.processAndCache(rawResponse, using: stagesAndEntries)
 
-            debugLog(.pipeline,       ["  └╴Response after pipeline:", result.summary()])
-            debugLog(.networkDetails, ["    Details:", result.dump("      ")])
+            SiestaLog.log(.pipeline,       ["  └╴Response after pipeline:", result.summary()])
+            SiestaLog.log(.networkDetails, ["    Details:", result.dump("      ")])
 
             return result
             }
@@ -55,7 +55,7 @@ internal extension Pipeline
             if case .success(let entity) = output,
                let cacheEntry = cacheEntry
                 {
-                debugLog(.cache, ["  ├╴Caching entity with", type(of: entity.content), "content in", cacheEntry])
+                SiestaLog.log(.cache, ["  ├╴Caching entity with", type(of: entity.content), "content in", cacheEntry])
                 cacheEntry.write(entity)
                 }
 
@@ -63,45 +63,12 @@ internal extension Pipeline
             }
         }
 
-    internal func cachedEntity(for resource: Resource, onHit: @escaping (Entity<Any>) -> ())
+    internal func checkCache(for resource: Resource) -> Request
         {
-        // Extract cache keys on main thread
-        let stagesAndEntries = self.stagesAndEntries(for: resource)
-
-        defaultEntityCacheWorkQueue.async
-            {
-            if let entity = Pipeline.cacheLookup(using: stagesAndEntries)
-                {
-                DispatchQueue.main.async
-                    { onHit(entity) }
-                }
-            }
-        }
-
-    // Runs on a background queue
-    private static func cacheLookup(using stagesAndEntries: [StageAndEntry]) -> Entity<Any>?
-        {
-        for (index, (_, cacheEntry)) in stagesAndEntries.enumerated().reversed()
-            {
-            if let result = cacheEntry?.read()
-                {
-                debugLog(.cache, ["Cache hit for", cacheEntry])
-
-                let processed = Pipeline.processAndCache(
-                    .success(result),
-                    using: stagesAndEntries.suffix(from: index + 1))
-
-                switch processed
-                    {
-                    case .failure:
-                        debugLog(.cache, ["Error processing cached entity; will ignore cached value. Error:", processed])
-
-                    case .success(let entity):
-                        return entity
-                    }
-                }
-            }
-        return nil
+        return Resource
+            .prepareRequest(using:
+                CacheRequestDelegate(for: resource, searching: stagesAndEntries(for: resource)))
+            .start()
         }
 
     internal func updateCacheEntryTimestamps(_ timestamp: TimeInterval, for resource: Resource)
@@ -117,6 +84,78 @@ internal extension Pipeline
         }
     }
 
+
+// MARK: Cache Request
+
+extension Pipeline
+    {
+    private struct CacheRequestDelegate: RequestDelegate
+        {
+        let requestDescription: String
+        private let stagesAndEntries: [StageAndEntry]
+
+        init(for resource: Resource, searching stagesAndEntries: [StageAndEntry])
+            {
+            requestDescription = "Cache request for \(resource)"
+            self.stagesAndEntries = stagesAndEntries
+            }
+
+        func startUnderlyingOperation(passingResponseTo completionHandler: RequestCompletionHandler)
+            {
+            defaultEntityCacheWorkQueue.async
+                {
+                let response: Response
+                if let entity = self.performCacheLookup()
+                    { response = .success(entity) }
+                else
+                    {
+                    response = .failure(RequestError(
+                        userMessage: NSLocalizedString("Cache miss", comment: "userMessage"),
+                        cause: RequestError.Cause.CacheMiss()))
+                    }
+
+                DispatchQueue.main.async
+                    {
+                    completionHandler.broadcastResponse(ResponseInfo(response: response))
+                    }
+                }
+            }
+
+        func cancelUnderlyingOperation()
+            { }
+
+        func repeated() -> RequestDelegate
+            { return self }
+
+        // Runs on a background queue
+        private func performCacheLookup() -> Entity<Any>?
+            {
+            for (index, (_, cacheEntry)) in stagesAndEntries.enumerated().reversed()
+                {
+                if let result = cacheEntry?.read()
+                    {
+                    SiestaLog.log(.cache, ["Cache hit for", cacheEntry])
+
+                    let processed = Pipeline.processAndCache(
+                        .success(result),
+                        using: stagesAndEntries.suffix(from: index + 1))
+
+                    switch processed
+                        {
+                        case .failure:
+                            SiestaLog.log(.cache, ["Error processing cached entity; will ignore cached value. Error:", processed])
+
+                        case .success(let entity):
+                            return entity
+                        }
+                    }
+                }
+            return nil
+            }
+        }
+    }
+
+
 // MARK: Type erasure dance
 
 internal struct CacheBox
@@ -126,7 +165,8 @@ internal struct CacheBox
 
     init?<T: EntityCache>(cache: T?)
         {
-        guard let cache = cache else { return nil }
+        guard let cache = cache else
+            { return nil }
         buildEntry = { CacheEntry(cache: cache, resource: $0) }
         description = String(describing: type(of: cache))
         }
@@ -150,15 +190,15 @@ private struct CacheEntry<Cache, Key>: CacheEntryProtocol
         {
         DispatchQueue.mainThreadPrecondition()
 
-        guard let key = cache.key(for: resource) else { return nil }
-
+        guard let key = cache.key(for: resource) else
+            { return nil }
         self.cache = cache
         self.key = key
         }
 
     func read() -> Entity<Any>?
         {
-        return dispatchSyncOnWorkQueue
+        return cache.workQueue.sync
             { self.cache.readEntity(forKey: self.key) }
         }
 
@@ -178,13 +218,5 @@ private struct CacheEntry<Cache, Key>: CacheEntryProtocol
         {
         cache.workQueue.async
             { self.cache.removeEntity(forKey: self.key) }
-        }
-
-    private func dispatchSyncOnWorkQueue<T>(_ action: (Void) -> T) -> T
-        {
-        var result: T?
-        cache.workQueue.sync
-            { result = action() }
-        return result!
         }
     }

@@ -50,7 +50,7 @@ class ServiceSpec: SiestaSpec
                 expect(service.baseURL?.absoluteString) == "https://frotzle.zing/"
                 }
 
-            func addSpecsForBareServce(_ description: String, serviceBuidler: @escaping (Void) -> Service)
+            func addSpecsForBareServce(_ description: String, serviceBuidler: @escaping () -> Service)
                 {
                 context(description)
                     {
@@ -300,6 +300,8 @@ class ServiceSpec: SiestaSpec
 
             describe("using wilcards")
                 {
+                let funnyChars = [":", "!", "@", "$"]
+
                 it("matches against the base URL")
                     {
                     checkPattern("fez",  matches: true,  "/fez")
@@ -311,8 +313,17 @@ class ServiceSpec: SiestaSpec
 
                 it("matches full URLs")
                     {
-                    checkPattern("https://foo.com/*/fez", matches: false, "/fez")
-                    checkPattern("https://foo.com/*/fez", matches: true,  "https://foo.com/v1/fez", absolute: true)
+                    checkPattern("https://foo.com/*/fez",   matches: false, "/fez")
+                    checkPattern("https://foo.com/*/fez",   matches: true,  "https://foo.com/v1/fez", absolute: true)
+                    }
+
+                it("can match host and port separately")
+                    {
+                    checkPattern("https://foo.com:*/**", matches: true,  "https://foo.com:8080/v1/fez", absolute: true)
+                    checkPattern("https://bar.com:*/**", matches: false, "https://foo.com:8080/v1/fez", absolute: true)
+                    checkPattern("https://*:8080/**",    matches: true,  "https://foo.com:8080/v1/fez", absolute: true)
+                    checkPattern("https://*:7070/**",    matches: false, "https://foo.com:8080/v1/fez", absolute: true)
+                    checkPattern("https://foo.com:*/**", matches: false, "https://foo.com/v1/fez", absolute: true)
                     }
 
                 it("ignores a leading slash")
@@ -336,6 +347,8 @@ class ServiceSpec: SiestaSpec
                     checkPattern("/*x*/c", matches: true,  "/x/c")
                     checkPattern("/*x*/c", matches: true,  "/foxy/c")
                     checkPattern("/*x*/c", matches: false, "/fozzy/c")
+                    for funnyChar in funnyChars
+                        { checkPattern("/*/d", matches: true, "/\(funnyChar)/d") }
                     }
 
                 it("matches across segments with **")
@@ -351,6 +364,11 @@ class ServiceSpec: SiestaSpec
                     checkPattern("/**x**",  matches: false, "/just/a/health/handful")
                     checkPattern("/**/*",   matches: true,  "/a/b")
                     checkPattern("/**/*",   matches: true,  "/ab")
+                    for funnyChar in funnyChars
+                        {
+                        checkPattern("/**/d", matches: true, "/a/b/\(funnyChar)/c/d")
+                        checkPattern("/**",   matches: true, "/a/b/\(funnyChar)/c/d")
+                        }
                     }
 
                 it("matches single non-separator chars with ?")
@@ -364,6 +382,8 @@ class ServiceSpec: SiestaSpec
                     checkPattern("/x/?*",   matches: false, "/x/")
                     checkPattern("/x/?*",   matches: true,  "/x/o")
                     checkPattern("/x/?*",   matches: true,  "/x/oye")
+                    for funnyChar in funnyChars
+                        { checkPattern("/x?y", matches: true, "/x\(funnyChar)y") }
                     }
 
                 it("ignores query strings in the matched URL")
@@ -470,7 +490,7 @@ class ServiceSpec: SiestaSpec
 
             it("wipes only resources matched by predicate")
                 {
-                service().wipeResources() { $0 === resource1() }
+                service().wipeResources { $0 === resource1() }
                 expect(resource0().latestData).notTo(beNil())
                 expect(resource1().latestData).to(beNil())
                 }
@@ -481,39 +501,47 @@ class ServiceSpec: SiestaSpec
 
 // MARK: - Custom matchers
 
-func expandToBaseURL(_ expectedURL: String) -> MatcherFunc<String>
+func expandToBaseURL(_ expectedURL: String) -> Predicate<String>
     {
-    return MatcherFunc
+    return Predicate
         {
-        actual, failureMessage in
+        actual in
 
         let baseURL = try! actual.evaluate() ?? "",
             service = Service(baseURL: baseURL),
             actualURL = service.baseURL?.absoluteString
-        failureMessage.stringValue =
-            "expected baseURL \(baseURL.debugDescription)"
-            + " to expand to \(expectedURL.debugDescription),"
-            + " but got \(actualURL.debugDescription)"
-        return actualURL == expectedURL
+        return PredicateResult(
+            bool: actualURL == expectedURL,
+            message: ExpectationMessage.fail(
+                """
+                Incorrect baseURL normalization:
+                  Expected baseURL \(stringify(baseURL))
+                      to expand to \(stringify(expectedURL))
+                           but got \(stringify(actualURL))
+                """))
         }
     }
 
-func expandToResourceURL(_ expectedURL: String) -> MatcherFunc<(String,String)>
+func expandToResourceURL(_ expectedURL: String) -> Predicate<(String,String)>
     {
-    return MatcherFunc
+    return Predicate
         {
-        inputs, failureMessage in
+        actual in
 
-        let (baseURL, resourcePath) = try! inputs.evaluate()!,
+        let (baseURL, resourcePath) = try! actual.evaluate()!,
             service = Service(baseURL: baseURL),
             resource = service.resource(resourcePath),
             actualURL = resource.url.absoluteString
-        failureMessage.stringValue =
-            "expected baseURL \(baseURL.debugDescription)"
-            + " and resource path \(resourcePath.debugDescription)"
-            + " to expand to \(expectedURL.debugDescription),"
-            + " but got \(actualURL.debugDescription)"
-        return actualURL == expectedURL
+        return PredicateResult(
+            bool: actualURL == expectedURL,
+            message: ExpectationMessage.fail(
+                """
+                Incorrect URL resolution for resource(_:):
+                  Expected baseURL \(stringify(baseURL))
+                   + resource path \(stringify(resourcePath))
+                      to expand to \(stringify(expectedURL))
+                           but got \(stringify(actualURL))
+                """))
         }
     }
 
@@ -530,5 +558,5 @@ func checkPathExpansion(_ baseURL: String, path resourcePath: String, expect exp
 
 func expectInvalidResource(_ resource: Resource)
     {
-    awaitFailure(resource.load(), alreadyCompleted: true)
+    awaitFailure(resource.load(), initialState: .completed)
     }

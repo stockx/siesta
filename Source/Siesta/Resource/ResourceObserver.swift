@@ -55,7 +55,7 @@ public protocol ResourceObserver
     var observerIdentity: AnyHashable { get }
     }
 
-struct UniqueObserverIdentity: Hashable
+internal struct UniqueObserverIdentity: Hashable
     {
     private static var idSeq = 0
     private let id: Int
@@ -65,26 +65,18 @@ struct UniqueObserverIdentity: Hashable
         id = UniqueObserverIdentity.idSeq
         UniqueObserverIdentity.idSeq += 1
         }
-
-    static func == (lhs: UniqueObserverIdentity, rhs: UniqueObserverIdentity) -> Bool
-        {
-        return lhs.id == rhs.id
-        }
-
-    var hashValue: Int
-        { return id }
     }
 
-public extension ResourceObserver
+extension ResourceObserver
     {
     /// Does nothing.
-    func resourceRequestProgress(for resource: Resource, progress: Double) { }
+    public func resourceRequestProgress(for resource: Resource, progress: Double) { }
 
     /// Does nothing.
-    func stoppedObserving(resource: Resource) { }
+    public func stoppedObserving(resource: Resource) { }
 
     /// True iff self and other are (1) both objects and (2) are the _same_ object.
-    var observerIdentity: AnyHashable
+    public var observerIdentity: AnyHashable
         {
         if isObject(self)
             { return AnyHashable(ObjectIdentifier(self as AnyObject)) }
@@ -98,7 +90,7 @@ public extension ResourceObserver
 
   See `Resource.addObserver(owner:file:line:closure:)`.
 */
-public typealias ResourceObserverClosure = (Resource, ResourceEvent) -> ()
+public typealias ResourceObserverClosure = (Resource, ResourceEvent) -> Void
 
 /**
   The possible causes of a call to `ResourceObserver.resourceChanged(_:event:)`.
@@ -153,7 +145,7 @@ public enum ResourceEvent
         }
     }
 
-public extension Resource
+extension Resource
     {
     // MARK: - Observing Resources
 
@@ -203,14 +195,15 @@ public extension Resource
         if let existingEntry = observers[identity]
             {
             existingEntry.addOwner(owner)
-            observersChanged()
-            return self
+            }
+        else
+            {
+            let newEntry = ObserverEntry(observer: observer, resource: self)
+            newEntry.addOwner(owner)
+            observers[identity] = newEntry
+            observer.resourceChanged(self, event: .observerAdded)
             }
 
-        let newEntry = ObserverEntry(observer: observer, resource: self)
-        newEntry.addOwner(owner)
-        observers[identity] = newEntry
-        observer.resourceChanged(self, event: .observerAdded)
         observersChanged()
         return self
         }
@@ -266,15 +259,15 @@ public extension Resource
         {
         cleanDefunctObservers(force: true)
 
-        debugLog(.observers, [self, "sending", event, "event to", observers.count, "observer" + (observers.count == 1 ? "" : "s")])
+        SiestaLog.log(.observers, [self, "sending", event, "event to", observers.count, "observer" + (observers.count == 1 ? "" : "s")])
         for entry in observers.values
             {
-            debugLog(.observers, ["  ↳", event, "→", entry.observer])
+            SiestaLog.log(.observers, ["  ↳", event, "→", entry.observer])
             entry.observer?.resourceChanged(self, event: event)
             }
         }
 
-    internal func notifyObservers(progress: Double)
+    internal func notifyObservers(ofProgress progress: Double)
         {
         for entry in observers.values
             {
@@ -340,13 +333,13 @@ internal class ObserverEntry: CustomStringConvertible
         {
         self.observerRef = StrongOrWeakRef<ResourceObserver>(observer)
         self.resource = resource
-        if LogCategory.enabled.contains(.observers)
+        if SiestaLog.Category.enabled.contains(.observers)
             { originalObserverDescription = debugStr(observer) }  // So we know what was deallocated if it gets logged
         }
 
     deinit
         {
-        debugLog(.observers, ["removing observer of", resource, "whose owners are all gone:", self])
+        SiestaLog.log(.observers, ["removing observer of", resource, "whose owners are all gone:", self])
         observer?.stoppedObserving(resource: resource)
         }
 
@@ -370,8 +363,8 @@ internal class ObserverEntry: CustomStringConvertible
 
     private func withOwner(
             _ owner: AnyObject,
-            ifObserver selfOwnerAction: (Void) -> Void,
-            else externalOwnerAction: (Void) -> Void)
+            ifObserver selfOwnerAction: () -> Void,
+            else externalOwnerAction: () -> Void)
         {
         // TODO: see if isObject() check improves perf here once https://bugs.swift.org/browse/SR-2867 is fixed
         if owner === (observer as AnyObject?)
@@ -419,5 +412,5 @@ private struct ClosureObserver: ResourceObserver, CustomDebugStringConvertible
 extension Resource: WeakCacheValue
     {
     func allowRemovalFromCache()
-        { cleanDefunctObservers() }
+        { cleanDefunctObservers(force: true) }
     }

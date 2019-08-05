@@ -8,51 +8,39 @@
 
 import Foundation
 
-internal typealias ResponseCallback = (ResponseInfo) -> Void
-
-internal protocol RequestWithDefaultCallbacks: Request
+/// Wraps all the `Request` hooks as `ResponseCallback`s and funnels them through `onCompletion(_:)`.
+extension Request
     {
-    func addResponseCallback(_ callback: @escaping ResponseCallback) -> Self
-    }
-
-/// Wraps all the `Request` hooks as `ResponseCallback`s and funnels them through `addResponseCallback(_:)`.
-extension RequestWithDefaultCallbacks
-    {
-    func onCompletion(_ callback: @escaping (ResponseInfo) -> Void) -> Self
+    func onSuccess(_ callback: @escaping (Entity<Any>) -> Void) -> Request
         {
-        return addResponseCallback(callback)
-        }
-
-    func onSuccess(_ callback: @escaping (Entity<Any>) -> Void) -> Self
-        {
-        return addResponseCallback
+        return onCompletion
             {
             if case .success(let entity) = $0.response
                 { callback(entity) }
             }
         }
 
-    func onNewData(_ callback: @escaping (Entity<Any>) -> Void) -> Self
+    func onNewData(_ callback: @escaping (Entity<Any>) -> Void) -> Request
         {
-        return addResponseCallback
+        return onCompletion
             {
             if $0.isNew, case .success(let entity) = $0.response
                 { callback(entity) }
             }
         }
 
-    func onNotModified(_ callback: @escaping (Void) -> Void) -> Self
+    func onNotModified(_ callback: @escaping () -> Void) -> Request
         {
-        return addResponseCallback
+        return onCompletion
             {
             if !$0.isNew, case .success = $0.response
                 { callback() }
             }
         }
 
-    func onFailure(_ callback: @escaping (RequestError) -> Void) -> Self
+    func onFailure(_ callback: @escaping (RequestError) -> Void) -> Request
         {
-        return addResponseCallback
+        return onCompletion
             {
             if case .failure(let error) = $0.response
                 { callback(error) }
@@ -101,7 +89,15 @@ internal struct CallbackGroup<CallbackArguments>
         // Remember outcome in case more handlers are added after request is already completed
         completedValue = arguments
 
-        notify(arguments)
-        callbacks = []  // Fly, little handlers, be free!
+        // We need to let this mutating method finish before calling the callbacks. Some of them inspect
+        // completeValue (via isCompleted), which causes a simultaneous access error at runtime.
+        // See https://github.com/apple/swift-evolution/blob/master/proposals/0176-enforce-exclusive-access-to-memory.md
+
+        let snapshot = self
+        DispatchQueue.main.async
+            { snapshot.notify(arguments) }
+
+        // Fly, little handlers, be free! Now that we have a result, future onFoo() calls will invoke the callback.
+        callbacks = []
         }
     }

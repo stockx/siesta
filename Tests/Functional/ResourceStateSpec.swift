@@ -11,7 +11,7 @@ import Quick
 import Nimble
 import Nocilla
 
-class ResourceRequestsSpec: ResourceSpecBase
+class ResourceStateSpec: ResourceSpecBase
     {
     override func resourceSpec(_ service: @escaping () -> Service, _ resource: @escaping () -> Resource)
         {
@@ -231,7 +231,9 @@ class ResourceRequestsSpec: ResourceSpecBase
 
                 expect(resource().latestData).to(beNil())
                 expect(resource().latestError).notTo(beNil())
-                expect(resource().latestError?.cause as NSError?) == sampleError
+                let nserror = resource().latestError?.cause as NSError?
+                expect(nserror?.domain) == sampleError.domain
+                expect(nserror?.code) == sampleError.code
                 }
 
             // Testing all these HTTP codes individually because Apple likes
@@ -268,7 +270,7 @@ class ResourceRequestsSpec: ResourceSpecBase
                 let req = resource().load()
                 req.cancel()
                 _ = reqStub.go()
-                awaitFailure(req, alreadyCompleted: true)
+                awaitFailure(req, initialState: .completed)
 
                 expectDataToBeUnchanged()
                 expect(resource().latestError).to(beNil())
@@ -303,7 +305,7 @@ class ResourceRequestsSpec: ResourceSpecBase
             func expectToLoad(_ reqClosure: @autoclosure () -> Request?, returning loadReq: Request? = nil)
                 {
                 _ = stubRequest(resource, "GET").andReturn(200) // Stub first...
-                let reqReturned = reqClosure()             // ...then allow loading
+                let reqReturned = reqClosure()                  // ...then allow loading
                 expect(resource().isLoading) == true
                 expect(reqReturned).notTo(beNil())
                 if loadReq != nil
@@ -426,12 +428,14 @@ class ResourceRequestsSpec: ResourceSpecBase
                 {
                 var observerNotified = false
                 resource().addObserver(owner: request())
-                    { _ in observerNotified = true }
+                    { _,_  in observerNotified = true }
 
                 resource().load(using: request())
 
                 awaitNewData(request())
                 expect(observerNotified) == true
+
+                resource().removeObservers(ownedBy: request())
                 }
             }
 
@@ -446,7 +450,7 @@ class ResourceRequestsSpec: ResourceSpecBase
                 _ = reqStub()
                 _ = req()
                 owner = DummyObject()
-                resource().addObserver(owner: owner!) { _ in }
+                resource().addObserver(owner: owner!) { _,_ in }
                 owner = DummyObject() // replaces old one
                 // Resource now has outstanding load request & no observers
                 }
@@ -459,12 +463,14 @@ class ResourceRequestsSpec: ResourceSpecBase
                 resource().cancelLoadIfUnobserved()
 
                 _ = reqStub().go()
-                awaitFailure(req(), alreadyCompleted: true)
+                awaitFailure(req(), initialState: .completed)
+
+                awaitCancelledRequests()
                 }
 
             it("does not cancel if resource has an observer")
                 {
-                resource().addObserver(owner: owner!) { _ in }
+                resource().addObserver(owner: owner!) { _,_ in }
                 resource().cancelLoadIfUnobserved()
 
                 _ = reqStub().go()
@@ -479,32 +485,55 @@ class ResourceRequestsSpec: ResourceSpecBase
                 resource().cancelLoadIfUnobserved()
 
                 _ = reqStub().go()
-                awaitFailure(req0, alreadyCompleted: true)
-                awaitFailure(req1, alreadyCompleted: true)
+                awaitFailure(req0, initialState: .completed)
+                awaitFailure(req1, initialState: .completed)
                 }
 
             describe("(afterDelay:)")
                 {
-                it("cancels load if resource has loses observers during delay")
+                it("cancels load if resource loses its observers during delay")
                     {
-                    let expectation = QuickSpec.current().expectation(description: "cancelLoadIfUnobserved(afterDelay:")
-                    resource().addObserver(owner: owner!) { _ in }
+                    let expectation = QuickSpec.current.expectation(description: "cancelLoadIfUnobserved(afterDelay:")
+                    resource().addObserver(owner: owner!) { _,_ in }
                     resource().cancelLoadIfUnobserved(afterDelay: 0.001)
                         { expectation.fulfill() }
                     owner = nil
-                    QuickSpec.current().waitForExpectations(timeout: 1)
+                    QuickSpec.current.waitForExpectations(timeout: 1)
 
                     _ = reqStub().go()
-                    awaitFailure(req(), alreadyCompleted: true)
+                    awaitFailure(req(), initialState: .completed)
                     }
 
                 it("does not cancel load if resource gains an observer during delay")
                     {
-                    let expectation = QuickSpec.current().expectation(description: "cancelLoadIfUnobserved(afterDelay:")
+                    let expectation = QuickSpec.current.expectation(description: "cancelLoadIfUnobserved(afterDelay:")
                     resource().cancelLoadIfUnobserved(afterDelay: 0.001)
                         { expectation.fulfill() }
-                    resource().addObserver(owner: owner!) { _ in }
-                    QuickSpec.current().waitForExpectations(timeout: 1)
+                    resource().addObserver(owner: owner!) { _,_ in }
+                    QuickSpec.current.waitForExpectations(timeout: 1)
+
+                    _ = reqStub().go()
+                    awaitNewData(req())
+                    }
+
+                it("cancels load after the delay")
+                    {
+                    let expectation = QuickSpec.current.expectation(description: "cancelLoadIfUnobserved(afterDelay:")
+                    resource().cancelLoadIfUnobserved(afterDelay: 0.2)
+                        { expectation.fulfill() }
+                    QuickSpec.current.waitForExpectations(timeout: 0.3)
+
+                    _ = reqStub().go()
+                    awaitFailure(req(), initialState: .completed)
+                    }
+
+                it("does not cancel load before the delay")
+                    {
+                    let expectation = QuickSpec.current.expectation(description: "cancelLoadIfUnobserved(afterDelay:")
+                    expectation.isInverted = true
+                    resource().cancelLoadIfUnobserved(afterDelay: 0.2)
+                        { expectation.fulfill() }
+                    QuickSpec.current.waitForExpectations(timeout: 0.1)
 
                     _ = reqStub().go()
                     awaitNewData(req())
@@ -538,9 +567,9 @@ class ResourceRequestsSpec: ResourceSpecBase
 
             it("does not touch the transformer pipeline")
                 {
-                let rawData = "a string".data(using: String.Encoding.ascii)
-                resource().overrideLocalData(with: Entity<Any>(content: rawData!, contentType: "text/plain"))
-                expect(resource().latestData?.content as? Data) === rawData
+                let rawData = DummyObject()
+                resource().overrideLocalData(with: Entity<Any>(content: rawData, contentType: "text/plain"))
+                expect(resource().latestData?.content as? DummyObject) === rawData
                 }
             }
 
@@ -660,7 +689,7 @@ class ResourceRequestsSpec: ResourceSpecBase
                 let req = resource().load()
                 req.cancel()
                 _ = reqStub.go()
-                awaitFailure(req, alreadyCompleted: true)
+                awaitFailure(req, initialState: .completed)
 
                 awaitNewData(resource().loadIfNeeded()!)
                 }
@@ -729,11 +758,13 @@ class ResourceRequestsSpec: ResourceSpecBase
                 for reqStub in reqStubs
                     { _ = reqStub.go() }
                 for req in reqs
-                    { awaitFailure(req, alreadyCompleted: true) }
+                    { awaitFailure(req, initialState: .completed) }
 
                 expect(resource().isLoading) == false
                 expect(resource().latestData).to(beNil())
                 expect(resource().latestError).to(beNil())
+
+                awaitCancelledRequests()
                 }
 
             it("cancels requests attached with load(using:) even if they came from another resource")
@@ -746,7 +777,7 @@ class ResourceRequestsSpec: ResourceSpecBase
                 resource().wipe()
 
                 _ = stub.go()
-                awaitFailure(otherResourceReq, alreadyCompleted: true)
+                awaitFailure(otherResourceReq, initialState: .completed)
                 expect(resource().loadRequests.count) == 0
                 }
             }

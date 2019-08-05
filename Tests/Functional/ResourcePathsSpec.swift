@@ -125,6 +125,12 @@ class ResourcePathsSpec: ResourceSpecBase
                 expectRelativeOf(resourceWithParam, "?baz=fez", toResolveTo: "https://zingle.frotz/v1/a/b?baz=fez")
                 expectRelativeOf(resourceWithParam, "./c",      toResolveTo: "https://zingle.frotz/v1/a/c")
                 }
+
+            it("allows duplicate param keys in supplied query string")
+                {
+                let resourceWithParam = resource().withParam("foo", "bar")
+                expectRelativeOf(resourceWithParam, "?baz=fez&baz=fuzz", toResolveTo: "https://zingle.frotz/v1/a/b?baz=fez&baz=fuzz")
+                }
             }
 
         describe("optionalRelative()")
@@ -172,6 +178,8 @@ class ResourcePathsSpec: ResourceSpecBase
                 {
                 expect(resourceWithParams().withParam("foo", "").url.absoluteString)
                      == "https://zingle.frotz/v1/a/b?foo&zoogle=oogle"
+                expect(resourceWithParams().withParam("foo", "").withParam("zoogle", "").url.absoluteString)
+                     == "https://zingle.frotz/v1/a/b?foo&zoogle"
                 }
 
             it("treats nil value as removal")
@@ -185,6 +193,18 @@ class ResourcePathsSpec: ResourceSpecBase
                 expect(resourceWithParams().withParam("foo", nil).withParam("zoogle", nil).url.absoluteString)
                      == "https://zingle.frotz/v1/a/b"
                 }
+
+            it("accepts multiple parameters as a dictionary")
+                {
+                expect(resourceWithParams().withParams(["dogcow": "moof", "frogbear": "grribbit"]).url.absoluteString)
+                     == "https://zingle.frotz/v1/a/b?dogcow=moof&foo=bar&frogbear=grribbit&zoogle=oogle"
+                }
+
+            it("allows parameter alteration and removal via dictionary")
+                {
+                expect(resourceWithParams().withParams(["foo": "oof", "zoogle": nil]).url.absoluteString)
+                     == "https://zingle.frotz/v1/a/b?foo=oof"
+                }
             }
         }
     }
@@ -193,32 +213,37 @@ class ResourcePathsSpec: ResourceSpecBase
 // MARK: - Custom matchers
 
 private func resourceExpansionMatcher(
-             _ expectedURL: String,
+        _ expectedURL: String,
         relationshipName: String,
-            relationship: @escaping (Resource,String) -> Resource)
-    -> MatcherFunc<(Resource,String)>
+        relationship: @escaping (Resource,String) -> Resource)
+    -> Predicate<(Resource,String)>
     {
-    return MatcherFunc
-        { inputs, failureMessage in
+    return Predicate
+        {
+        inputs in
 
         let (resource, path) = try! inputs.evaluate()!,
             actualURL = relationship(resource, path).url.absoluteString
-        failureMessage.stringValue =
-            "expected \(relationshipName) \(path.debugDescription)"
-            + " of resource \(resource.url)"
-            + " to expand to \(expectedURL.debugDescription),"
-            + " but got \(actualURL.debugDescription)"
-        return actualURL == expectedURL
+        return PredicateResult(
+            bool: actualURL == expectedURL,
+            message: ExpectationMessage.fail(
+                """
+                Incorrect resource URL resolution:
+                      Expected \(relationshipName) \(stringify(path))
+                   of resource \(resource.url)
+                  to expand to \(stringify(expectedURL))
+                       but got \(stringify(actualURL))
+                """))
         }
     }
 
-private func expandToChildURL(_ expectedURL: String) -> MatcherFunc<(Resource,String)>
+private func expandToChildURL(_ expectedURL: String) -> Predicate<(Resource,String)>
     {
     return resourceExpansionMatcher(expectedURL, relationshipName: "child")
         { resource, path in resource.child(path) }
     }
 
-private func expandToRelativeURL(_ expectedURL: String) -> MatcherFunc<(Resource,String)>
+private func expandToRelativeURL(_ expectedURL: String) -> Predicate<(Resource,String)>
     {
     return resourceExpansionMatcher(expectedURL, relationshipName: "relative")
         { resource, path in resource.relative(path) }

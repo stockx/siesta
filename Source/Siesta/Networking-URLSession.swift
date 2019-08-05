@@ -50,29 +50,29 @@ private struct URLSessionRequestNetworking: RequestNetworking, SessionTaskContai
 
 extension URLSession: NetworkingProviderConvertible
     {
-    /// You can pass an `URLSession` when creating a `Service`.
+    /// You can pass a `URLSession` when creating a `Service`.
     public var siestaNetworkingProvider: NetworkingProvider
         { return URLSessionProvider(session: self) }
     }
 
 extension URLSessionConfiguration: NetworkingProviderConvertible
     {
-    /// You can pass an `URLSessionConfiguration` when creating a `Service`.
+    /// You can pass a `URLSessionConfiguration` when creating a `Service`.
     public var siestaNetworkingProvider: NetworkingProvider
         { return URLSession(configuration: self).siestaNetworkingProvider }
     }
 
-/// Convenience for `NetworkingProvider` implementations that ultimate rely on an `URLSessionTask`.
+/// Convenience for `NetworkingProvider` implementations that ultimate rely on a `URLSessionTask`.
 public protocol SessionTaskContainer
     {
     /// Underlying networking task that can report request progress.
     var task: URLSessionTask { get }
     }
 
-public extension SessionTaskContainer
+extension SessionTaskContainer
     {
     /// Extracts transfer metrics using bytes counts from `URLSessionTask`.
-    var transferMetrics: RequestTransferMetrics
+    public var transferMetrics: RequestTransferMetrics
         {
         return RequestTransferMetrics(
             requestBytesSent:      task.countOfBytesSent,

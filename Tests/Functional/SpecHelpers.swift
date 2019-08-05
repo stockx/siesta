@@ -11,7 +11,7 @@ import Nimble
 import Nocilla
 @testable import Siesta
 
-public func specVar<T>(_ builder: @escaping () -> T) -> () -> T
+func specVar<T>(_ builder: @escaping () -> T) -> () -> T
     {
     var value: T?
     afterEach { value = nil }
@@ -27,26 +27,24 @@ func simulateMemoryWarning()
     {
     NotificationCenter.default
         .post(
-            name: Siesta.MemoryWarningNotification,
+            name: Siesta.memoryWarningNotification,
             object: nil)
     }
 
-func beIdentialObjects<T>(_ expectedArray: [T]) -> NonNilMatcherFunc<[T]>
+func beIdentialObjects<T>(_ expectedArray: [T]) -> Predicate<[T]>
     {
     func makeIdent(_ x: T) -> ObjectIdentifier
         {
         return ObjectIdentifier(x as AnyObject)
         }
 
-    return NonNilMatcherFunc
-        { inputs, failureMessage in
-
-        let actualArray = try! inputs.evaluate()!
-        failureMessage.stringValue =
-            "expected \(expectedArray)"
-            + " but got \(actualArray)"
-
-        return expectedArray.map(makeIdent)
-            ==   actualArray.map(makeIdent)
+    return Predicate
+        {
+        inputs in
+        let actualArray = try inputs.evaluate()!
+        return PredicateResult(
+            bool: expectedArray.map(makeIdent) == actualArray.map(makeIdent),
+            message: ExpectationMessage.fail(
+                "expected specific objects \(stringify(expectedArray)) but got \(stringify(actualArray))"))
         }
     }

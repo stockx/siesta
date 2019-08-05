@@ -28,8 +28,8 @@ internal func debugStr(
     if consolidateWhitespace
         { s = s.replacing(regex: whitespacePat, with: " ") }
 
-    if let truncate = truncate, s.characters.count > truncate
-        { s = s.substring(to: s.index(s.startIndex, offsetBy: truncate)) + "…" }
+    if let truncate = truncate, s.count > truncate
+        { s = s.prefix(truncate) + "…" }
 
     return s
     }
@@ -166,7 +166,7 @@ extension RequestError
         if let content = entity?.content
             { result += " content: \(type(of: content))" }
         if let cause = cause
-            { result += " cause: " + debugStr(cause, truncate: 32)}
+            { result += " cause: " + debugStr(cause, truncate: 32) }
         return result
         }
     }

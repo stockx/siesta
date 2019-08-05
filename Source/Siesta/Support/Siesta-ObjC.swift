@@ -6,6 +6,8 @@
 //  Copyright © 2016 Bust Out Solutions. All rights reserved.
 //
 
+// swiftlint:disable identifier_name type_name missing_docs
+
 import Foundation
 
 /*
@@ -33,6 +35,7 @@ import Foundation
      * Custom ResponseTransformers
      * Custom NetworkingProviders
      * Logging config
+     * Just about anything else configuration-related
 */
 
 // MARK: - Because Swift structs aren’t visible to Obj-C
@@ -45,21 +48,21 @@ import Foundation
 @objc(BOSEntity)
 public class _objc_Entity: NSObject
     {
-    public var content: AnyObject
-    public var contentType: String
-    public var charset: String?
-    public var etag: String?
+    @objc public var content: AnyObject
+    @objc public var contentType: String
+    @objc public var charset: String?
+    @objc public var etag: String?
     fileprivate var headers: [String:String]
-    public private(set) var timestamp: TimeInterval = 0
+    @objc public private(set) var timestamp: TimeInterval = 0
 
-    public init(content: AnyObject, contentType: String, headers: [String:String])
+    @objc public init(content: AnyObject, contentType: String, headers: [String:String])
         {
         self.content = content
         self.contentType = contentType
         self.headers = headers
         }
 
-    public convenience init(content: AnyObject, contentType: String)
+    @objc public convenience init(content: AnyObject, contentType: String)
         { self.init(content: content, contentType: contentType, headers: [:]) }
 
     internal init(_ entity: Entity<Any>)
@@ -71,14 +74,14 @@ public class _objc_Entity: NSObject
         self.headers     = entity.headers
         }
 
-    public func header(_ key: String) -> String?
+    @objc public func header(_ key: String) -> String?
         { return headers[key.lowercased()] }
 
-    public override var description: String
+    @objc public override var description: String
         { return debugStr(Entity<Any>.convertedFromObjc(self)) }
     }
 
-internal extension Entity
+extension Entity
     {
     static func convertedFromObjc(_ entity: _objc_Entity) -> Entity<Any>
         {
@@ -89,11 +92,11 @@ internal extension Entity
 @objc(BOSError)
 public class _objc_Error: NSObject
     {
-    public var httpStatusCode: Int
-    public var cause: NSError?
-    public var userMessage: String
-    public var entity: _objc_Entity?
-    public let timestamp: TimeInterval
+    @objc public var httpStatusCode: Int
+    @objc public var cause: NSError?
+    @objc public var userMessage: String
+    @objc public var entity: _objc_Entity?
+    @objc public let timestamp: TimeInterval
 
     internal init(_ error: RequestError)
         {
@@ -106,7 +109,7 @@ public class _objc_Error: NSObject
         }
     }
 
-public extension Service
+extension Service
     {
     @objc(resourceWithAbsoluteURL:)
     public final func _objc_resourceWithAbsoluteURL(absoluteURL url: URL?) -> Resource
@@ -117,7 +120,7 @@ public extension Service
         { return resource(absoluteURL: url) }
     }
 
-public extension Resource
+extension Resource
     {
     @objc(latestData)
     public var _objc_latestData: _objc_Entity?
@@ -152,6 +155,26 @@ public extension Resource
     @objc(overrideLocalData:)
     public func _objc_overrideLocalData(_ entity: _objc_Entity)
         { overrideLocalData(with: Entity<Any>.convertedFromObjc(entity)) }
+
+    @objc(withParams:)
+    public func _objc_withParams(_ params: [String:NSObject]) -> Resource
+        {
+        return withParams(
+            params.mapValues
+                {
+                switch $0
+                    {
+                    case let string as String:
+                        return string
+
+                    case is NSNull:
+                        return nil
+
+                    default:
+                        fatalError("Received parameter value that is neither string nor null: \($0)")
+                    }
+                })
+        }
     }
 
 // MARK: - Because Swift closures aren’t exposed as Obj-C blocks
@@ -164,7 +187,7 @@ public class _objc_Request: NSObject
     fileprivate init(_ request: Request)
         { self.request = request }
 
-    public func onCompletion(_ objcCallback: @escaping @convention(block) (_objc_Entity?, _objc_Error?) -> Void) -> _objc_Request
+    @objc public func onCompletion(_ objcCallback: @escaping @convention(block) (_objc_Entity?, _objc_Error?) -> Void) -> _objc_Request
         {
         request.onCompletion
             {
@@ -180,44 +203,44 @@ public class _objc_Request: NSObject
         return self
         }
 
-    public func onSuccess(_ objcCallback: @escaping @convention(block) (_objc_Entity) -> Void) -> _objc_Request
+    @objc public func onSuccess(_ objcCallback: @escaping @convention(block) (_objc_Entity) -> Void) -> _objc_Request
         {
         request.onSuccess { entity in objcCallback(_objc_Entity(entity)) }
         return self
         }
 
-    public func onNewData(_ objcCallback: @escaping @convention(block) (_objc_Entity) -> Void) -> _objc_Request
+    @objc public func onNewData(_ objcCallback: @escaping @convention(block) (_objc_Entity) -> Void) -> _objc_Request
         {
         request.onNewData { entity in objcCallback(_objc_Entity(entity)) }
         return self
         }
 
-    public func onNotModified(_ objcCallback: @escaping @convention(block) (Void) -> Void) -> _objc_Request
+    @objc public func onNotModified(_ objcCallback: @escaping @convention(block) () -> Void) -> _objc_Request
         {
         request.onNotModified(objcCallback)
         return self
         }
 
-    public func onFailure(_ objcCallback: @escaping @convention(block) (_objc_Error) -> Void) -> _objc_Request
+    @objc public func onFailure(_ objcCallback: @escaping @convention(block) (_objc_Error) -> Void) -> _objc_Request
         {
         request.onFailure { error in objcCallback(_objc_Error(error)) }
         return self
         }
 
-    public func onProgress(_ objcCallback: @escaping @convention(block) (Float) -> Void) -> _objc_Request
+    @objc public func onProgress(_ objcCallback: @escaping @convention(block) (Float) -> Void) -> _objc_Request
         {
         request.onProgress { p in objcCallback(Float(p)) }
         return self
         }
 
-    public func cancel()
+    @objc public func cancel()
         { request.cancel() }
 
-    public override var description: String
+    @objc public override var description: String
         { return debugStr(request) }
     }
 
-public extension Resource
+extension Resource
     {
     @objc(load)
     public func _objc_load() -> _objc_Request
@@ -285,7 +308,7 @@ extension ResourceEvent
         }
     }
 
-public extension Resource
+extension Resource
     {
     @objc(addObserver:)
     public func _objc_addObserver(_ observerAndOwner: _objc_ResourceObserver & AnyObject) -> Self
@@ -303,7 +326,7 @@ public extension Resource
         }
     }
 
-public extension Resource
+extension Resource
     {
     private func _objc_wrapRequest(
             _ methodString: String,
@@ -314,7 +337,7 @@ public extension Resource
             {
             return _objc_Request(
                 Resource.failedRequest(
-                    RequestError(
+                    returning: RequestError(
                         userMessage: NSLocalizedString("Cannot create request", comment: "userMessage"),
                         cause: _objc_Error.Cause.InvalidRequestMethod(method: methodString))))
             }
@@ -332,7 +355,7 @@ public extension Resource
             {
             return _objc_Request(
                 Resource.failedRequest(
-                    RequestError(
+                    returning: RequestError(
                         userMessage: NSLocalizedString("Cannot send request", comment: "userMessage"),
                         cause: RequestError.Cause.InvalidJSONObject())))
             }
@@ -340,7 +363,7 @@ public extension Resource
         return _objc_wrapRequest(methodString) { closure($0, json) }
         }
 
-    private static func apply(requestMutation: (@convention(block) (NSMutableURLRequest) -> ())?, to request: inout URLRequest)
+    private static func apply(requestMutation: (@convention(block) (NSMutableURLRequest) -> Void)?, to request: inout URLRequest)
         {
         let mutableReq = (request as NSURLRequest).mutableCopy() as! NSMutableURLRequest
         requestMutation?(mutableReq)
@@ -350,7 +373,7 @@ public extension Resource
     @objc(requestWithMethod:requestMutation:)
     public func _objc_request(
             _ method:          String,
-            requestMutation: (@convention(block) (NSMutableURLRequest) -> ())?)
+            requestMutation: (@convention(block) (NSMutableURLRequest) -> Void)?)
         -> _objc_Request
         {
         return _objc_wrapRequest(method)
@@ -373,7 +396,7 @@ public extension Resource
             _ method:        String,
             data:            Data,
             contentType:     String,
-            requestMutation: (@convention(block) (NSMutableURLRequest) -> ())?)
+            requestMutation: (@convention(block) (NSMutableURLRequest) -> Void)?)
         -> _objc_Request
         {
         return _objc_wrapRequest(method)
@@ -399,7 +422,7 @@ public extension Resource
              text:            String,
              contentType:     String,
              encoding:        UInt = String.Encoding.utf8.rawValue,
-             requestMutation: (@convention(block) (NSMutableURLRequest) -> ())?)
+             requestMutation: (@convention(block) (NSMutableURLRequest) -> Void)?)
          -> _objc_Request
          {
          return _objc_wrapRequest(method)
@@ -424,7 +447,7 @@ public extension Resource
              _ method:        String,
              json:            NSObject?,
              contentType:     String,
-             requestMutation: (@convention(block) (NSMutableURLRequest) -> ())?)
+             requestMutation: (@convention(block) (NSMutableURLRequest) -> Void)?)
          -> _objc_Request
          {
          return _objc_wrapJSONRequest(method, json)
@@ -438,7 +461,7 @@ public extension Resource
      public func _objc_request(
              _ method:          String,
              urlEncoded params: [String:String],
-             requestMutation:   (@convention(block) (NSMutableURLRequest) -> ())?)
+             requestMutation:   (@convention(block) (NSMutableURLRequest) -> Void)?)
          -> _objc_Request
          {
          return _objc_wrapRequest(method)
@@ -456,7 +479,7 @@ public extension Resource
         }
     }
 
-public extension _objc_Error
+extension _objc_Error
     {
     public enum Cause
         {

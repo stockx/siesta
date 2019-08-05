@@ -24,6 +24,10 @@ class ResourceObserversSpec: ResourceSpecBase
 
         afterEach
             {
+            observer.checkForUnfulfilledExpectations()
+            observer.stopTesting()
+            resource().removeObservers(ownedBy: observer)
+            simulateMemoryWarning()
             awaitObserverCleanup(for: resource())
             observer = nil
             }
@@ -188,7 +192,9 @@ class ResourceObserversSpec: ResourceSpecBase
                 let req = resource().load()
                 req.cancel()
                 _ = reqStub.go()
-                awaitFailure(req, alreadyCompleted: true)
+                awaitFailure(req, initialState: .completed)
+
+                awaitCancelledRequests()
                 }
 
             it("receives failure event")
@@ -227,6 +233,8 @@ class ResourceObserversSpec: ResourceSpecBase
                 awaitNewData(resource().load())
 
                 expect(events) == ["observerAdded", "requested", "newData(network)"]
+
+                resource().removeObservers(ownedBy: dummy)
                 }
 
             it("can have multiple closure observers")
@@ -250,6 +258,8 @@ class ResourceObserversSpec: ResourceSpecBase
 
                 expect(events0) == ["observerAdded", "requested", "newData(network)", "requested", "newData(network)"]
                 expect(events1) == ["observerAdded", "requested", "newData(network)"]
+
+                resource().removeObservers(ownedBy: dummy)
                 }
 
             it("is not added twice if it is an object")
@@ -263,15 +273,21 @@ class ResourceObserversSpec: ResourceSpecBase
                 awaitNewData(resource().load())
                 }
 
-            context("with multiple owners")
+            describe("with multiple owners")
                 {
-                let owner1 = specVar { NSData() },
-                    owner2 = specVar { NSString() }
+                let owner1 = NSData(),
+                    owner2 = NSString()
 
                 beforeEach
                     {
-                    resource().addObserver(observer, owner: owner1())
-                    resource().addObserver(observer, owner: owner2())
+                    resource().addObserver(observer, owner: owner1)
+                    resource().addObserver(observer, owner: owner2)
+                    }
+
+                afterEach
+                    {
+                    resource().removeObservers(ownedBy: owner1)
+                    resource().removeObservers(ownedBy: owner2)
                     }
 
                 func expectStillObserving(_ stillObserving: Bool)
@@ -288,25 +304,26 @@ class ResourceObserversSpec: ResourceSpecBase
                     awaitNewData(resource().load())
                     }
 
+
                 it("is not removed if self-ownership is not removed")
                     {
-                    resource().removeObservers(ownedBy: owner1())
-                    resource().removeObservers(ownedBy: owner2())
+                    resource().removeObservers(ownedBy: owner1)
+                    resource().removeObservers(ownedBy: owner2)
                     expectStillObserving(true)
                     }
 
                 it("is not removed if external owner is not removed")
                     {
                     resource().removeObservers(ownedBy: observer)
-                    resource().removeObservers(ownedBy: owner2())
+                    resource().removeObservers(ownedBy: owner2)
                     expectStillObserving(true)
                     }
 
                 it("is removed when all owners are removed")
                     {
                     resource().removeObservers(ownedBy: observer)
-                    resource().removeObservers(ownedBy: owner1())
-                    resource().removeObservers(ownedBy: owner2())
+                    resource().removeObservers(ownedBy: owner1)
+                    resource().removeObservers(ownedBy: owner2)
                     expectStillObserving(false)
                     }
                 }
@@ -395,8 +412,8 @@ class ResourceObserversSpec: ResourceSpecBase
         describe("observer auto-removal")
             {
             func expectToStopObservation(
-                    _ observer: (Void) -> TestObserverWithExpectations,  // closure b/c we don't want to retain it as param
-                    callbackThatShouldCauseRemoval: (Void) -> Void)
+                    _ observer: () -> TestObserverWithExpectations,  // closure b/c we don't want to retain it as param
+                    callbackThatShouldCauseRemoval: () -> Void)
                 {
                 observer().expect(.requested)
 
@@ -433,7 +450,7 @@ class ResourceObserversSpec: ResourceSpecBase
             it("stops observing when owner is deallocated")
                 {
                 let observer = TestObserverWithExpectations()
-                var owner: AnyObject? = "foo" as NSString
+                var owner: AnyObject? = NSObject()
 
                 observer.expect(.observerAdded)
                 resource().addObserver(observer, owner: owner!)
@@ -458,12 +475,10 @@ private class TestObserver: ResourceObserver
 
 private class TestObserverWithExpectations: ResourceObserver
     {
-    private var expectedEvents = [Expectation]()
+    private var expectedEvents: [Expectation] = []
+    private var testing = true
 
-    deinit
-        { checkForUnfulfilledExpectations() }
-
-    func expect(_ events: ResourceEvent..., callback: @escaping ((Void) -> Void) = {})
+    func expect(_ events: ResourceEvent..., callback: @escaping (() -> Void) = {})
         {
         for event in events
             { expectedEvents.append(Expectation(event: "\(event)", callback: callback)) }
@@ -480,6 +495,11 @@ private class TestObserverWithExpectations: ResourceObserver
             { XCTFail("Expected observer events, but never received them: \(expectedEvents.map { $0.event })") }
         }
 
+    func stopTesting()
+        {
+        testing = false
+        }
+
     func resourceChanged(_ resource: Resource, event: ResourceEvent)
         {
         consume(event: "\(event)")
@@ -492,6 +512,9 @@ private class TestObserverWithExpectations: ResourceObserver
 
     private func consume(event: String)
         {
+        guard testing else
+            { return }
+
         if expectedEvents.isEmpty
             { XCTFail("Received unexpected observer event: \(event)") }
         else
@@ -507,7 +530,7 @@ private class TestObserverWithExpectations: ResourceObserver
     private struct Expectation
         {
         let event: String
-        let callback: ((Void) -> Void)
+        let callback: (() -> Void)
 
         func description() -> String
             { return event }
